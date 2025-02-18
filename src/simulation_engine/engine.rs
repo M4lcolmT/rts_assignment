@@ -1,9 +1,4 @@
 // simulation_engine/main.rs
-//
-// Previously, this might have contained a standalone `fn main()`.
-// We'll rename it to `run_simulation()` and make it public so that
-// the top-level can call it.
-
 use std::thread;
 use std::time::Duration;
 
@@ -34,7 +29,6 @@ pub fn run_simulation() {
             *route1.first().unwrap(),
             *route1.last().unwrap(),
             10.0,
-            0,
         );
         vehicle1 = Some((v, route1));
     }
@@ -49,7 +43,6 @@ pub fn run_simulation() {
             *route2.first().unwrap(),
             *route2.last().unwrap(),
             15.0,
-            10,
         );
         vehicle2 = Some((ev, route2));
     }

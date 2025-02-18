@@ -1,4 +1,4 @@
-use crate::simulation_engine::intersection::IntersectionId;
+use crate::simulation_engine::intersections::IntersectionId;
 
 /// Different types of vehicles in the simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub struct Vehicle {
     /// Physical length of the vehicle in meters.
     pub length: f64,
     /// Priority (e.g., 0 for normal, higher for emergency vehicles).
-    pub priority: u8,
+    // pub priority: u8,
     /// Whether this vehicle is an emergency vehicle.
     pub is_emergency: bool,
 }
@@ -38,7 +38,7 @@ impl Vehicle {
         entry_point: IntersectionId,
         exit_point: IntersectionId,
         speed: f64,
-        priority: u8,
+        // priority: u8,
     ) -> Self {
         let (length, is_emergency) = match vehicle_type {
             VehicleType::Car => (4.5, false),
@@ -54,7 +54,7 @@ impl Vehicle {
             exit_point,
             speed,
             length,
-            priority,
+            // priority,
             is_emergency,
         }
     }

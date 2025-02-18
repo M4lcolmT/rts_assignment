@@ -1,6 +1,6 @@
 use crate::simulation_engine::grid::TrafficGrid;
-use crate::simulation_engine::intersection::{IntersectionControl, IntersectionId, LightState};
-use crate::simulation_engine::lane::Lane;
+use crate::simulation_engine::intersections::{IntersectionControl, IntersectionId, LightState};
+use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::vehicles::Vehicle;
 
 /// Attempts to retrieve a mutable reference to the lane that connects two intersections.
