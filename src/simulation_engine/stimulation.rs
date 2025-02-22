@@ -1,3 +1,6 @@
+use crate::flow_analyzer::{
+    analyze_traffic, collect_traffic_data, predict_future_traffic, send_congestion_alerts,
+};
 use crate::simulation_engine::intersections::{
     clear_intersection_for_emergency, restore_intersection, Intersection,
 };
@@ -153,6 +156,24 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, lanes: Vec<Lane>) {
 
         // Simulate movement for each vehicle.
         simulate_vehicle_movement(&mut vehicles, &mut intersections);
+
+        // --- Flow Analyzer Integration ---
+        // Collect traffic data (e.g., occupancy, vehicle count) from lanes, vehicles, and intersections.
+        let active_vehicles: Vec<Vehicle> = vehicles.iter().map(|(v, _)| v.clone()).collect();
+        let traffic_data = collect_traffic_data(&lanes, &active_vehicles, &intersections);
+
+        // Analyze the traffic data for congestion hotspots.
+        let alerts = analyze_traffic(&traffic_data);
+        if !alerts.is_empty() {
+            send_congestion_alerts(&alerts);
+        }
+
+        // Predict future traffic conditions (e.g., for the next 10 seconds).
+        let predicted = predict_future_traffic(&traffic_data);
+        println!(
+            "Predicted average lane occupancy: {:.2} (current: {:.2})",
+            predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
+        );
 
         // Pause between simulation ticks.
         thread::sleep(Duration::from_millis(1000));

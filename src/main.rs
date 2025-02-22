@@ -1,3 +1,4 @@
+mod flow_analyzer;
 mod simulation_engine;
 mod control_system;
 mod flow_analyzer;
