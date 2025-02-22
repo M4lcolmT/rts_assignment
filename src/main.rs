@@ -1,13 +1,12 @@
-mod flow_analyzer;
-mod simulation_engine;
 mod control_system;
 mod flow_analyzer;
 mod monitoring;
+mod simulation_engine;
 
+use control_system::traffic_light_controller::TrafficLightController;
 use simulation_engine::intersections::create_intersections;
 use simulation_engine::lanes::create_lanes;
 use simulation_engine::stimulation;
-use control_system::traffic_light_controller::TrafficLightController;
 use std::thread;
 use std::time::Duration;
 
