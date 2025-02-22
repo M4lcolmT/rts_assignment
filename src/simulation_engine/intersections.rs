@@ -30,8 +30,6 @@ pub struct Intersection {
     pub control: IntersectionControl,
     /// The current traffic light state (if applicable).
     pub light_state: Option<LightState>,
-    /// Connected intersections (adjacent nodes).
-    pub connected: Vec<IntersectionId>,
     /// Flag to check if an emergency vehicle is currently in the intersection.
     pub has_emergency_vehicle: bool,
 }
@@ -45,7 +43,6 @@ impl Intersection {
         is_entry: bool,
         is_exit: bool,
         control: IntersectionControl,
-        connected: Vec<IntersectionId>,
     ) -> Self {
         let light_state = match control {
             IntersectionControl::TrafficLight => Some(LightState::Red),
@@ -59,7 +56,6 @@ impl Intersection {
             is_exit,
             control,
             light_state,
-            connected,
             has_emergency_vehicle: false,
         }
     }
@@ -76,17 +72,29 @@ impl Intersection {
             }
         }
     }
+}
 
-    /// Clears the intersection for emergency vehicles by forcing all vehicles to stop.
-    pub fn clear_intersection_for_emergency(&mut self) {
-        self.has_emergency_vehicle = true;
-        self.light_state = Some(LightState::Green);
+// A helper function to simulate stopping vehicles at an intersection.
+pub fn clear_intersection_for_emergency(intersection: &mut Intersection) {
+    if !intersection.has_emergency_vehicle {
+        println!(
+            "Clearing intersection {:?} for emergency: switching light to Red.",
+            intersection.id
+        );
     }
+    intersection.light_state = Some(LightState::Red);
+    intersection.has_emergency_vehicle = true;
+}
 
-    /// Resets the emergency state after the vehicle has passed.
-    pub fn reset_emergency_status(&mut self) {
-        self.has_emergency_vehicle = false;
-    }
+// A helper function to restore an intersection's traffic light.
+pub fn restore_intersection(intersection: &mut Intersection) {
+    println!(
+        "Intersection {:?} is now restored to normal operation: switching light to Green.",
+        intersection.id
+    );
+    intersection.light_state = Some(LightState::Green); // Restore the light to Green
+    intersection.has_emergency_vehicle = false; // No longer an emergency
+    intersection.update_light(); // Update the light if needed
 }
 
 pub fn create_intersections() -> Vec<Intersection> {
@@ -98,7 +106,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             false,
             IntersectionControl::Normal,
-            vec![IntersectionId(0, 1), IntersectionId(1, 0)],
         ),
         Intersection::new(
             "Intersection 01".to_string(),
@@ -107,11 +114,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             true,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(0, 0),
-                IntersectionId(1, 1),
-                IntersectionId(0, 2),
-            ],
         ),
         Intersection::new(
             "Intersection 02".to_string(),
@@ -120,11 +122,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             false,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(0, 1),
-                IntersectionId(1, 2),
-                IntersectionId(0, 3),
-            ],
         ),
         Intersection::new(
             "Intersection 03".to_string(),
@@ -133,7 +130,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             true,
             IntersectionControl::Normal,
-            vec![IntersectionId(0, 2), IntersectionId(1, 3)],
         ),
         Intersection::new(
             "Intersection 10".to_string(),
@@ -142,11 +138,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             true,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(0, 0),
-                IntersectionId(2, 0),
-                IntersectionId(1, 1),
-            ],
         ),
         Intersection::new(
             "Intersection 11".to_string(),
@@ -155,12 +146,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             false,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(0, 1),
-                IntersectionId(1, 0),
-                IntersectionId(2, 1),
-                IntersectionId(1, 2),
-            ],
         ),
         Intersection::new(
             "Intersection 12".to_string(),
@@ -169,12 +154,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             false,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(0, 2),
-                IntersectionId(1, 1),
-                IntersectionId(2, 2),
-                IntersectionId(1, 3),
-            ],
         ),
         Intersection::new(
             "Intersection 13".to_string(),
@@ -183,11 +162,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             true,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(0, 3),
-                IntersectionId(1, 2),
-                IntersectionId(2, 3),
-            ],
         ),
         Intersection::new(
             "Intersection 20".to_string(),
@@ -196,11 +170,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             true,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(1, 0),
-                IntersectionId(3, 0),
-                IntersectionId(2, 1),
-            ],
         ),
         Intersection::new(
             "Intersection 21".to_string(),
@@ -209,12 +178,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             false,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(1, 1),
-                IntersectionId(2, 0),
-                IntersectionId(3, 1),
-                IntersectionId(2, 2),
-            ],
         ),
         Intersection::new(
             "Intersection 22".to_string(),
@@ -223,12 +186,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             false,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(1, 2),
-                IntersectionId(2, 1),
-                IntersectionId(3, 2),
-                IntersectionId(2, 3),
-            ],
         ),
         Intersection::new(
             "Intersection 23".to_string(),
@@ -237,11 +194,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             true,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(2, 2),
-                IntersectionId(3, 3),
-                IntersectionId(1, 3),
-            ],
         ),
         Intersection::new(
             "Intersection 30".to_string(),
@@ -250,7 +202,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             true,
             IntersectionControl::Normal,
-            vec![IntersectionId(2, 0), IntersectionId(3, 1)],
         ),
         Intersection::new(
             "Intersection 31".to_string(),
@@ -259,11 +210,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             false,
             true,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(3, 0),
-                IntersectionId(2, 1),
-                IntersectionId(3, 2),
-            ],
         ),
         Intersection::new(
             "Intersection 32".to_string(),
@@ -272,11 +218,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             false,
             IntersectionControl::TrafficLight,
-            vec![
-                IntersectionId(2, 2),
-                IntersectionId(3, 1),
-                IntersectionId(3, 3),
-            ],
         ),
         Intersection::new(
             "Intersection 33".to_string(),
@@ -285,7 +226,6 @@ pub fn create_intersections() -> Vec<Intersection> {
             true,
             false,
             IntersectionControl::Normal,
-            vec![IntersectionId(2, 3), IntersectionId(3, 2)],
         ),
     ]
 }
