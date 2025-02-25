@@ -175,6 +175,34 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, lanes: Vec<Lane>) {
             predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
         );
 
+        let congested: Vec<_> = traffic_data
+            .intersection_congestion
+            .iter()
+            .filter(|&(_, &occ)| occ > 0.80)
+            .map(|(&int_id, _)| int_id)
+            .collect();
+
+        // For each vehicle, attempt to generate a new "less traffic" route.
+        for (vehicle, route) in vehicles.iter_mut() {
+            if let Some(update) = crate::flow_analyzer::predictive_model::generate_route_update(
+                &traffic_data,
+                route,
+                &congested,
+                &lanes,
+            ) {
+                println!("Vehicle {} route update: {}", vehicle.id, update.reason);
+                // Replace the current route with the newly suggested route.
+                *route = update.new_route;
+            }
+        }
+
+        // Predict future traffic conditions (e.g., for the next 10 seconds).
+        let predicted = predict_future_traffic(&traffic_data);
+        println!(
+            "Predicted average lane occupancy: {:.2} (current: {:.2})",
+            predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
+        );
+
         // Pause between simulation ticks.
         thread::sleep(Duration::from_millis(1000));
     }

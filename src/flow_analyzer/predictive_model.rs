@@ -122,3 +122,60 @@ pub fn send_congestion_alerts(alerts: &[CongestionAlert]) {
         println!("Recommended Action: {}", alert.recommended_action);
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct RouteUpdate {
+    pub new_route: Vec<Lane>,
+    pub reason: String,
+}
+
+pub fn generate_route_update(
+    data: &TrafficData,
+    current_route: &[Lane],
+    avoid_intersections: &[IntersectionId],
+    all_lanes: &[Lane],
+) -> Option<RouteUpdate> {
+    let occupancy_threshold = 0.75;
+    if data.average_lane_occupancy > occupancy_threshold {
+        println!(
+            "High occupancy detected: {:.2}. Generating a less traffic route...",
+            data.average_lane_occupancy
+        );
+        // Assume the vehicle is at the start of its current route.
+        let current_intersection = if let Some(first_lane) = current_route.first() {
+            first_lane.from
+        } else {
+            return None;
+        };
+
+        // Here we call generate_shortest_lane_route. Note: You must modify that function
+        // to consider intersections to avoid if desired.
+        // For now, we use the current route's last lane's destination if it's not congested.
+        let target_intersection = if let Some(last_lane) = current_route.last() {
+            if avoid_intersections.contains(&last_lane.to) {
+                return None;
+            }
+            last_lane.to
+        } else {
+            return None;
+        };
+
+        // Call the route generation algorithm (assumed to be defined elsewhere)
+        if let Some(new_route) =
+            crate::simulation_engine::route_generation::generate_shortest_lane_route(
+                all_lanes,
+                current_intersection,
+                target_intersection,
+            )
+        {
+            return Some(RouteUpdate {
+                new_route,
+                reason: format!(
+                    "Occupancy {:.2} exceeded threshold {:.2}.",
+                    data.average_lane_occupancy, occupancy_threshold
+                ),
+            });
+        }
+    }
+    None
+}
