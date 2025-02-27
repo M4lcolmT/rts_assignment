@@ -103,40 +103,67 @@ pub fn simulate_vehicle_movement(
             continue;
         }
 
-        // Peek the first lane in the route without removing it yet.
         let current_lane = &route[0];
-
-        // Determine if the lane originates from a traffic-light controlled intersection.
         let intersection_opt = intersections.iter().find(|i| i.id == current_lane.from);
-        let can_move = if let Some(intersection) = intersection_opt {
+        let mut can_move = false;
+
+        if let Some(intersection) = intersection_opt {
             if intersection.control == IntersectionControl::TrafficLight {
-                // Check if the lane is currently green.
-                traffic_controller.is_lane_green(intersection.id, &current_lane.name)
+                if vehicle.is_emergency {
+                    // Instead of forcing only `current_lane.name`, we call
+                    // the new method that also includes the opposite direction
+                    traffic_controller.set_emergency_override(
+                        intersection.id,
+                        &current_lane.name,
+                        lanes,  // pass all lanes
+                    );
+                    can_move = true; // emergency vehicles proceed
+                } else {
+                    can_move = traffic_controller.is_lane_green(
+                        intersection.id,
+                        &current_lane.name
+                    );
+                }
             } else {
-                true // No traffic light control; allow immediate movement.
+                can_move = true; // No traffic light
             }
         } else {
-            true
-        };
+            can_move = true;
+        }
 
         if can_move {
-            // If the vehicle was waiting, remove its length from the lane.
-            // (In production code, you’d want to track waiting state per vehicle to avoid double subtraction.)
             lanes
                 .iter_mut()
-                .find(|lane| lane.name == current_lane.name)
-                .map(|lane| lane.remove_vehicle(vehicle));
+                .find(|ln| ln.name == current_lane.name)
+                .map(|ln| ln.remove_vehicle(vehicle));
 
-            // Vehicle moves: remove the lane from its route.
             let moving_lane = route.remove(0);
             println!(
                 "Vehicle {:?} {} is moving on lane: {} (from {:?} to {:?})",
-                vehicle.vehicle_type,
-                vehicle.id,
-                moving_lane.name,
-                moving_lane.from,
-                moving_lane.to
+                vehicle.vehicle_type, vehicle.id, moving_lane.name,
+                moving_lane.from, moving_lane.to
             );
+
+            // If it’s an emergency, clear override on the intersection just left,
+            // and set override on the next intersection (if any).
+            if vehicle.is_emergency {
+                traffic_controller.clear_emergency_override(moving_lane.from);
+
+                if !route.is_empty() {
+                    let next_lane = &route[0];
+                    if let Some(next_int) = intersections
+                        .iter()
+                        .find(|i| i.id == next_lane.from && i.control == IntersectionControl::TrafficLight)
+                    {
+                        traffic_controller.set_emergency_override(
+                            next_int.id,
+                            &next_lane.name,
+                            lanes,  // pass all lanes again
+                        );
+                    }
+                }
+            }
+
             if route.is_empty() {
                 println!(
                     "Vehicle {:?} {} has reached its destination at intersection: {:?}",
@@ -145,16 +172,14 @@ pub fn simulate_vehicle_movement(
                 finished_vehicle_ids.push(vehicle.id);
             }
         } else {
-            // Vehicle must wait: if not already added, add its length to the lane's current_vehicle_length.
-            // (A real implementation should check to avoid multiple additions per tick.)
             println!(
                 "Vehicle {:?} {} is waiting at lane: {} (traffic light is red)",
                 vehicle.vehicle_type, vehicle.id, current_lane.name
             );
             lanes
                 .iter_mut()
-                .find(|lane| lane.name == current_lane.name)
-                .map(|lane| lane.add_vehicle(vehicle));
+                .find(|ln| ln.name == current_lane.name)
+                .map(|ln| ln.add_vehicle(vehicle));
         }
     }
 
