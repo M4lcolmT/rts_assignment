@@ -129,6 +129,7 @@ pub struct RouteUpdate {
     pub reason: String,
 }
 
+// TODO: think if need to move this logic to route_generation.rs instead
 pub fn generate_route_update(
     data: &TrafficData,
     current_route: &[Lane],

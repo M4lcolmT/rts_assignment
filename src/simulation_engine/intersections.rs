@@ -74,28 +74,30 @@ impl Intersection {
     }
 }
 
+// TODO: remove and put inside traffic light controller
 // A helper function to simulate stopping vehicles at an intersection.
-pub fn clear_intersection_for_emergency(intersection: &mut Intersection) {
-    if !intersection.has_emergency_vehicle {
-        println!(
-            "Clearing intersection {:?} for emergency: switching light to Red.",
-            intersection.id
-        );
-    }
-    intersection.light_state = Some(LightState::Red);
-    intersection.has_emergency_vehicle = true;
-}
+// pub fn clear_intersection_for_emergency(intersection: &mut Intersection) {
+//     if !intersection.has_emergency_vehicle {
+//         println!(
+//             "Clearing intersection {:?} for emergency: switching light to Red.",
+//             intersection.id
+//         );
+//     }
+//     intersection.light_state = Some(LightState::Red);
+//     intersection.has_emergency_vehicle = true;
+// }
 
+// TODO: remove and put inside traffic light controller
 // A helper function to restore an intersection's traffic light.
-pub fn restore_intersection(intersection: &mut Intersection) {
-    println!(
-        "Intersection {:?} is now restored to normal operation: switching light to Green.",
-        intersection.id
-    );
-    intersection.light_state = Some(LightState::Green); // Restore the light to Green
-    intersection.has_emergency_vehicle = false; // No longer an emergency
-    intersection.update_light(); // Update the light if needed
-}
+// pub fn restore_intersection(intersection: &mut Intersection) {
+//     println!(
+//         "Intersection {:?} is now restored to normal operation: switching light to Green.",
+//         intersection.id
+//     );
+//     intersection.light_state = Some(LightState::Green); // Restore the light to Green
+//     intersection.has_emergency_vehicle = false; // No longer an emergency
+//     intersection.update_light(); // Update the light if needed
+// }
 
 pub fn create_intersections() -> Vec<Intersection> {
     vec![
