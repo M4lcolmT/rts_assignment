@@ -1,11 +1,11 @@
 use crate::control_system::traffic_light_controller::TrafficLightController;
-use crate::flow_analyzer::predictive_model::{
-    analyze_traffic, collect_traffic_data, predict_future_traffic, send_congestion_alerts,
-};
+use crate::flow_analyzer::predictive_model::{handle_accident_event, AccidentEvent};
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl};
 use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
+use rand::prelude::*; // brings thread_rng() and Rng methods into scope
+use rand::rng;
 use rand::Rng;
 use std::{thread, time::Duration};
 
@@ -115,14 +115,12 @@ pub fn simulate_vehicle_movement(
                     traffic_controller.set_emergency_override(
                         intersection.id,
                         &current_lane.name,
-                        lanes,  // pass all lanes
+                        lanes, // pass all lanes
                     );
                     can_move = true; // emergency vehicles proceed
                 } else {
-                    can_move = traffic_controller.is_lane_green(
-                        intersection.id,
-                        &current_lane.name
-                    );
+                    can_move =
+                        traffic_controller.is_lane_green(intersection.id, &current_lane.name);
                 }
             } else {
                 can_move = true; // No traffic light
@@ -140,8 +138,11 @@ pub fn simulate_vehicle_movement(
             let moving_lane = route.remove(0);
             println!(
                 "Vehicle {:?} {} is moving on lane: {} (from {:?} to {:?})",
-                vehicle.vehicle_type, vehicle.id, moving_lane.name,
-                moving_lane.from, moving_lane.to
+                vehicle.vehicle_type,
+                vehicle.id,
+                moving_lane.name,
+                moving_lane.from,
+                moving_lane.to
             );
 
             // If it’s an emergency, clear override on the intersection just left,
@@ -151,14 +152,13 @@ pub fn simulate_vehicle_movement(
 
                 if !route.is_empty() {
                     let next_lane = &route[0];
-                    if let Some(next_int) = intersections
-                        .iter()
-                        .find(|i| i.id == next_lane.from && i.control == IntersectionControl::TrafficLight)
-                    {
+                    if let Some(next_int) = intersections.iter().find(|i| {
+                        i.id == next_lane.from && i.control == IntersectionControl::TrafficLight
+                    }) {
                         traffic_controller.set_emergency_override(
                             next_int.id,
                             &next_lane.name,
-                            lanes,  // pass all lanes again
+                            lanes, // pass all lanes again
                         );
                     }
                 }
@@ -186,29 +186,56 @@ pub fn simulate_vehicle_movement(
     vehicles.retain(|(v, _)| !finished_vehicle_ids.contains(&v.id));
 }
 
+fn random_accident(
+    intersections: &Vec<Intersection>,
+    vehicles: &mut Vec<(Vehicle, Vec<Lane>)>,
+    lanes: &Vec<Lane>,
+) {
+    // If `rng()` is available in your version:
+    let mut my_rng = rng();
+
+    // 5% chance
+    if my_rng.random_bool(0.05) {
+        if let Some(random_int) = intersections.choose(&mut my_rng) {
+            let accident = AccidentEvent {
+                intersection_id: random_int.id,
+                severity: my_rng.random_range(1..=10),
+            };
+            println!(
+                "Random accident generated at intersection {:?} with severity {}",
+                accident.intersection_id, accident.severity
+            );
+            // Handle the accident
+            handle_accident_event(&accident, vehicles, lanes);
+        }
+    }
+}
+
 pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>) {
     let mut vehicles: Vec<(Vehicle, Vec<Lane>)> = Vec::new();
     let mut next_vehicle_id = 1;
     let mut traffic_controller = TrafficLightController::initialize(intersections.clone(), &lanes);
 
-    // Main simulation loop.
+    // Create HistoricalData to store occupancy snapshots for weighted predictions.
+    // Make sure you have "pub fn new(capacity: usize) -> Self" in your HistoricalData struct.
+    let mut historical = crate::flow_analyzer::predictive_model::HistoricalData::new(10);
+
     loop {
-        // Try to spawn a vehicle with some probability or condition.
-        // For demonstration, we'll spawn one on every loop iteration.
+        // === 1. Vehicle Spawning ===
         if let Some((vehicle, route)) = spawn_vehicle(&intersections, &lanes, &mut next_vehicle_id)
         {
-            // Print the route based on lane names.
             let route_names: Vec<String> = route.iter().map(|lane| lane.name.clone()).collect();
             println!(
-                "Spawned vehicle {:?} {} starting from intersection {:?} to intersection {:?} with the route: {:?}",
+                "Spawned vehicle {:?} {} from intersection {:?} to intersection {:?} with route: {:?}",
                 vehicle.vehicle_type, vehicle.id, vehicle.entry_point, vehicle.exit_point, route_names
             );
             vehicles.push((vehicle, route));
         }
 
+        // === 2. Update Traffic Lights ===
         traffic_controller.update_all();
 
-        // Simulate movement for each vehicle.
+        // === 3. Simulate Vehicle Movement ===
         simulate_vehicle_movement(
             &mut vehicles,
             &mut intersections,
@@ -216,53 +243,77 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
             &mut traffic_controller,
         );
 
-        // --- Flow Analyzer Integration ---
-        // Collect traffic data (e.g., occupancy, vehicle count) from lanes, vehicles, and intersections.
-        // let active_vehicles: Vec<Vehicle> = vehicles.iter().map(|(v, _)| v.clone()).collect();
-        // let traffic_data = collect_traffic_data(&lanes, &active_vehicles, &intersections);
+        // === 4. Random Accident Generation ===
+        // This function will (with a 5% chance) generate an accident and call handle_accident_event.
+        random_accident(&intersections, &mut vehicles, &lanes);
 
-        // Analyze the traffic data for congestion hotspots.
-        // let alerts = analyze_traffic(&traffic_data);
-        // if !alerts.is_empty() {
-        //     send_congestion_alerts(&alerts);
-        // }
+        // === 5. Flow Analyzer Integration ===
+        // a. Collect current traffic data (using active vehicles).
+        let active_vehicles: Vec<Vehicle> = vehicles.iter().map(|(v, _)| v.clone()).collect();
+        let traffic_data = crate::flow_analyzer::predictive_model::collect_traffic_data(
+            &lanes,
+            &active_vehicles,
+            &intersections,
+        );
 
-        // Predict future traffic conditions (e.g., for the next 10 seconds).
-        // let predicted = predict_future_traffic(&traffic_data);
-        // println!(
-        //     "Predicted average lane occupancy: {:.2} (current: {:.2})",
-        //     predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
-        // );
+        // b. Update historical data for weighted predictions.
+        //    If your struct method is named `update_occupancy`, call that:
+        historical.update(&traffic_data);
 
-        // let congested: Vec<_> = traffic_data
-        //     .intersection_congestion
-        //     .iter()
-        //     .filter(|&(_, &occ)| occ > 0.80)
-        //     .map(|(&int_id, _)| int_id)
-        //     .collect();
+        // c. Analyze congestion and send alerts.
+        let alerts = crate::flow_analyzer::predictive_model::analyze_traffic(&traffic_data);
+        if !alerts.is_empty() {
+            println!("--- Congestion Alerts ---");
+            crate::flow_analyzer::predictive_model::send_congestion_alerts(&alerts);
+        }
 
-        // For each vehicle, attempt to generate a new "less traffic" route.
-        // for (vehicle, route) in vehicles.iter_mut() {
-        //     if let Some(update) = crate::flow_analyzer::predictive_model::generate_route_update(
-        //         &traffic_data,
-        //         route,
-        //         &congested,
-        //         &lanes,
-        //     ) {
-        //         println!("Vehicle {} route update: {}", vehicle.id, update.reason);
-        //         // Replace the current route with the newly suggested route.
-        //         *route = update.new_route;
-        //     }
-        // }
+        // d. Predict future traffic conditions using weighted average
+        let alpha = 0.8; // You can adjust this value
+        let predicted = crate::flow_analyzer::predictive_model::predict_future_traffic_weighted(
+            &traffic_data,
+            &historical,
+            alpha,
+        );
+        println!(
+            "Predicted average lane occupancy (weighted): {:.2} (current: {:.2})",
+            predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
+        );
 
-        // Predict future traffic conditions (e.g., for the next 10 seconds).
-        // let predicted = predict_future_traffic(&traffic_data);
-        // println!(
-        //     "Predicted average lane occupancy: {:.2} (current: {:.2})",
-        //     predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
-        // );
+        // e. Actively generate route updates for vehicles passing through congested intersections.
+        //    Define congested intersections as those with occupancy > 0.80.
+        let congested_intersections: Vec<_> = traffic_data
+            .intersection_congestion
+            .iter()
+            .filter(|&(_, &occ)| occ > 0.80)
+            .map(|(&int_id, _)| int_id)
+            .collect();
 
-        // Pause between simulation ticks.
+        for (vehicle, route) in vehicles.iter_mut() {
+            if let Some(route_update) =
+                crate::flow_analyzer::predictive_model::generate_route_update(
+                    &traffic_data,
+                    route,
+                    &congested_intersections,
+                    &lanes,
+                )
+            {
+                println!("Vehicle {} re-routed: {}", vehicle.id, route_update.reason);
+                *route = route_update.new_route;
+            }
+        }
+
+        // f. (Optional) Generate traffic light adjustment recommendations.
+        let adjustments =
+            crate::flow_analyzer::predictive_model::generate_signal_adjustments(&traffic_data);
+        for adj in adjustments {
+            println!(
+                "Recommend adjusting intersection {:?}: add {} seconds green.",
+                adj.intersection_id, adj.add_seconds_green
+            );
+            // Here you could call a method on traffic_controller to apply the adjustment.
+        }
+
+        // === 6. Pause Before Next Tick ===
         thread::sleep(Duration::from_millis(1000));
     }
 }
