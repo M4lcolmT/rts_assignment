@@ -1,4 +1,7 @@
+use crossbeam_channel::Sender;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::simulation_engine::intersections::{Intersection, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
@@ -56,11 +59,14 @@ pub fn handle_accident_event(
 }
 
 /// Aggregated traffic data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+
 pub struct TrafficData {
     pub total_vehicles: usize,
     pub average_lane_occupancy: f64,
     pub intersection_congestion: HashMap<IntersectionId, f64>,
+    // New field for average waiting times per intersection.
+    pub intersection_waiting_time: HashMap<IntersectionId, f64>,
 }
 
 /// A congestion alert with a message and recommended action.
@@ -73,26 +79,30 @@ pub struct CongestionAlert {
 
 /// ---------------- NEW: HistoricalData for Weighted Predictions ----------------
 
-/// Stores historical occupancy values for each intersection using a ring buffer.
 #[derive(Debug)]
 pub struct HistoricalData {
     pub capacity: usize,
-    pub history: HashMap<IntersectionId, VecDeque<f64>>,
+    pub occupancy_history: HashMap<IntersectionId, VecDeque<f64>>,
+    pub waiting_time_history: HashMap<IntersectionId, VecDeque<f64>>,
 }
 
 impl HistoricalData {
-    /// Create a new HistoricalData with a given capacity (e.g., 10).
+    /// Create a new HistoricalData with a given capacity (e.g., 10 snapshots).
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            history: HashMap::new(),
+            occupancy_history: HashMap::new(),
+            waiting_time_history: HashMap::new(),
         }
     }
 
-    /// Update the history for each intersection with the latest occupancy value.
-    pub fn update(&mut self, data: &TrafficData) {
+    /// Update occupancy history for each intersection with the latest occupancy value.
+    pub fn update_occupancy(&mut self, data: &TrafficData) {
         for (&int_id, &occ) in &data.intersection_congestion {
-            let deque = self.history.entry(int_id).or_insert_with(VecDeque::new);
+            let deque = self
+                .occupancy_history
+                .entry(int_id)
+                .or_insert_with(VecDeque::new);
             if deque.len() == self.capacity {
                 deque.pop_front();
             }
@@ -100,9 +110,34 @@ impl HistoricalData {
         }
     }
 
+    /// Update waiting time history using the current waiting times.
+    pub fn update_waiting_time(&mut self, waiting_times: &HashMap<IntersectionId, f64>) {
+        for (&int_id, &wt) in waiting_times {
+            let deque = self
+                .waiting_time_history
+                .entry(int_id)
+                .or_insert_with(VecDeque::new);
+            if deque.len() == self.capacity {
+                deque.pop_front();
+            }
+            deque.push_back(wt);
+        }
+    }
+
     /// Compute the average occupancy for a given intersection from historical data.
-    pub fn average_for(&self, int_id: IntersectionId) -> f64 {
-        if let Some(deque) = self.history.get(&int_id) {
+    pub fn average_occupancy_for(&self, int_id: IntersectionId) -> f64 {
+        if let Some(deque) = self.occupancy_history.get(&int_id) {
+            if !deque.is_empty() {
+                let sum: f64 = deque.iter().sum();
+                return sum / deque.len() as f64;
+            }
+        }
+        0.0
+    }
+
+    /// Compute the average waiting time for a given intersection from historical data.
+    pub fn average_waiting_time_for(&self, int_id: IntersectionId) -> f64 {
+        if let Some(deque) = self.waiting_time_history.get(&int_id) {
             if !deque.is_empty() {
                 let sum: f64 = deque.iter().sum();
                 return sum / deque.len() as f64;
@@ -122,7 +157,7 @@ pub fn collect_traffic_data(
 ) -> TrafficData {
     let total_vehicles = vehicles.len();
 
-    // Average lane occupancy
+    // Compute average lane occupancy.
     let mut total_occupancy = 0.0;
     for lane in lanes {
         let occ = lane.current_vehicle_length / lane.length_meters;
@@ -134,7 +169,7 @@ pub fn collect_traffic_data(
         total_occupancy / lanes.len() as f64
     };
 
-    // Intersection-level congestion (simple average of outgoing lanes)
+    // Compute intersection-level congestion (average occupancy of outgoing lanes).
     let mut intersection_congestion = HashMap::new();
     for intersection in intersections {
         let outgoing: Vec<_> = lanes.iter().filter(|l| l.from == intersection.id).collect();
@@ -150,10 +185,48 @@ pub fn collect_traffic_data(
         }
     }
 
+    // Compute intersection waiting times.
+    // Here we assume that each lane has a `waiting_time` field.
+    let mut intersection_waiting_time = HashMap::new();
+    for intersection in intersections {
+        let outgoing: Vec<_> = lanes.iter().filter(|l| l.from == intersection.id).collect();
+        if outgoing.is_empty() {
+            intersection_waiting_time.insert(intersection.id, 0.0);
+        } else {
+            let total_waiting: f64 = outgoing.iter().map(|l| l.waiting_time).sum();
+            let avg_waiting = total_waiting / outgoing.len() as f64;
+            intersection_waiting_time.insert(intersection.id, avg_waiting);
+        }
+    }
+
     TrafficData {
         total_vehicles,
         average_lane_occupancy,
         intersection_congestion,
+        intersection_waiting_time, // waiting time data added
+    }
+}
+
+/// This structure packages both current and predicted traffic data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficUpdate {
+    pub current_data: TrafficData,
+    pub predicted_data: TrafficData,
+    pub timestamp: u64,
+}
+
+/// Returns the current timestamp (in seconds since the UNIX epoch).
+pub fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Sends a traffic update to the Traffic Light Controller via a channel.
+pub fn send_update_to_controller(update: TrafficUpdate, tx: &Sender<TrafficUpdate>) {
+    if let Err(e) = tx.send(update) {
+        log::info!("Failed to send traffic update to controller: {}", e);
     }
 }
 
@@ -161,7 +234,6 @@ pub fn collect_traffic_data(
 pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
     let mut alerts = Vec::new();
 
-    // Check overall average occupancy
     if data.average_lane_occupancy > 0.75 {
         alerts.push(CongestionAlert {
             intersection: None,
@@ -173,7 +245,6 @@ pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
         });
     }
 
-    // Check each intersection's congestion
     for (&int_id, &cong) in &data.intersection_congestion {
         if cong > 0.80 {
             alerts.push(CongestionAlert {
@@ -198,21 +269,39 @@ pub fn predict_future_traffic_weighted(
     alpha: f64,
 ) -> TrafficData {
     let mut new_congestion = HashMap::new();
+    let mut new_waiting_time = HashMap::new();
 
-    for (&int_id, &current) in &data.intersection_congestion {
-        let hist_avg = historical.average_for(int_id);
-        let predicted = alpha * current + (1.0 - alpha) * hist_avg;
-        new_congestion.insert(int_id, predicted.min(1.0));
+    // Compute weighted occupancy for each intersection.
+    for (&int_id, &current_occ) in &data.intersection_congestion {
+        let hist_occ = historical.average_occupancy_for(int_id);
+        let predicted_occ = alpha * current_occ + (1.0 - alpha) * hist_occ;
+        new_congestion.insert(int_id, predicted_occ.min(1.0));
+
+        log::info!(
+            "[Prediction] Intersection {:?}: current occupancy = {:.2}, historical average = {:.2}, predicted occupancy = {:.2}",
+            int_id, current_occ, hist_occ, predicted_occ
+        );
+    }
+
+    // Compute weighted waiting time for each intersection.
+    for (&int_id, &current_wait) in &data.intersection_waiting_time {
+        let hist_wait = historical.average_waiting_time_for(int_id);
+        let predicted_wait = alpha * current_wait + (1.0 - alpha) * hist_wait;
+        new_waiting_time.insert(int_id, predicted_wait);
+
+        log::info!(
+            "[Prediction] Intersection {:?}: current waiting time = {:.2}, historical average = {:.2}, predicted waiting time = {:.2}",
+            int_id, current_wait, hist_wait, predicted_wait
+        );
     }
 
     TrafficData {
         total_vehicles: data.total_vehicles,
-        // For simplicity, keep global occupancy the same as the current data's
-        average_lane_occupancy: data.average_lane_occupancy,
+        average_lane_occupancy: data.average_lane_occupancy, // global occupancy remains unchanged
         intersection_congestion: new_congestion,
+        intersection_waiting_time: new_waiting_time,
     }
 }
-
 /// Send alerts to the control system (here we just print them).
 pub fn send_congestion_alerts(alerts: &[CongestionAlert]) {
     for alert in alerts {

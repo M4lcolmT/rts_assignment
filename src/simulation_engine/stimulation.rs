@@ -1,12 +1,17 @@
 use crate::control_system::traffic_light_controller::TrafficLightController;
+use crate::flow_analyzer::predictive_model::{
+    current_timestamp, send_update_to_controller, TrafficUpdate,
+};
 use crate::flow_analyzer::predictive_model::{handle_accident_event, AccidentEvent};
-use crate::simulation_engine::intersections::{Intersection, IntersectionControl};
+use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
+use crossbeam_channel::Sender;
 use rand::prelude::*; // brings thread_rng() and Rng methods into scope
 use rand::rng;
 use rand::Rng;
+use std::collections::HashMap;
 use std::{thread, time::Duration};
 
 // TODO: not sure if need to keep or not.
@@ -211,7 +216,11 @@ fn random_accident(
     }
 }
 
-pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>) {
+pub fn run_simulation(
+    mut intersections: Vec<Intersection>,
+    mut lanes: Vec<Lane>,
+    tx: Sender<TrafficUpdate>,
+) {
     let mut vehicles: Vec<(Vehicle, Vec<Lane>)> = Vec::new();
     let mut next_vehicle_id = 1;
     let mut traffic_controller = TrafficLightController::initialize(intersections.clone(), &lanes);
@@ -255,10 +264,18 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
             &active_vehicles,
             &intersections,
         );
+        let waiting_times: HashMap<IntersectionId, f64> = intersections
+            .iter()
+            .map(|intersection| {
+                // Assuming you have a method to compute average waiting time for the intersection.
+                // For now, we can set a dummy value (e.g., 0.0) if not available.
+                (intersection.id, intersection.avg_waiting_time())
+            })
+            .collect();
 
         // b. Update historical data for weighted predictions.
-        //    If your struct method is named `update_occupancy`, call that:
-        historical.update(&traffic_data);
+        historical.update_occupancy(&traffic_data);
+        historical.update_waiting_time(&waiting_times);
 
         // c. Analyze congestion and send alerts.
         let alerts = crate::flow_analyzer::predictive_model::analyze_traffic(&traffic_data);
@@ -278,6 +295,14 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
             "Predicted average lane occupancy (weighted): {:.2} (current: {:.2})",
             predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
         );
+
+        // f. Package and send the update to the Traffic Light Controller.
+        let update = TrafficUpdate {
+            current_data: traffic_data.clone(),
+            predicted_data: predicted.clone(),
+            timestamp: current_timestamp(),
+        };
+        send_update_to_controller(update, &tx);
 
         // e. Actively generate route updates for vehicles passing through congested intersections.
         //    Define congested intersections as those with occupancy > 0.80.

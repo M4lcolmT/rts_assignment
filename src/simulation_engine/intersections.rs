@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IntersectionId(pub i8, pub i8);
 
 /// Represents control at an intersection.
@@ -32,6 +32,7 @@ pub struct Intersection {
     pub light_state: Option<LightState>,
     /// Flag to check if an emergency vehicle is currently in the intersection.
     pub has_emergency_vehicle: bool,
+    waiting_time: f64,
 }
 
 impl Intersection {
@@ -57,6 +58,7 @@ impl Intersection {
             control,
             light_state,
             has_emergency_vehicle: false,
+            waiting_time: 0.0, // Initialize waiting time to 0.0
         }
     }
 
@@ -71,6 +73,16 @@ impl Intersection {
                 };
             }
         }
+    }
+
+    /// Returns the current average waiting time at this intersection.
+    pub fn avg_waiting_time(&self) -> f64 {
+        self.waiting_time
+    }
+
+    /// Sets the average waiting time at this intersection.
+    pub fn set_waiting_time(&mut self, new_waiting_time: f64) {
+        self.waiting_time = new_waiting_time;
     }
 }
 
