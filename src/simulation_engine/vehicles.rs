@@ -20,6 +20,8 @@ pub struct Vehicle {
     pub length: f64,
     /// Priority (e.g., 0 for normal, higher for emergency vehicles).
     // pub priority: u8,
+    // TODO: maybe add waiting time
+    // TODO: maybe add re-route state flag to not allow re-routing for the vehicle again until it reaches the next intersection or makes noticeable progress.
     pub is_emergency: bool,
 }
 

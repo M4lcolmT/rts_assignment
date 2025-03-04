@@ -9,75 +9,63 @@ use crate::simulation_engine::vehicles::Vehicle;
 
 #[derive(Debug, Clone)]
 pub struct AccidentEvent {
-    pub intersection_id: IntersectionId,
-    pub severity: u8, // or any other fields you need
+    pub lane: Lane,
+    pub severity: u8,
 }
 
+/// When an accident occurs, vehicles already on the accident lane must wait,
+/// with waiting time increased based on severity. Upcoming vehicles will avoid this lane
+/// (via generate_route_update logic). Thus, this handler no longer re-routes vehicles.
 pub fn handle_accident_event(
     accident: &AccidentEvent,
     vehicles: &mut Vec<(Vehicle, Vec<Lane>)>,
-    lanes: &[Lane],
+    _lanes: &[Lane],
 ) {
     println!(
-        "[FlowAnalyzer] Accident at intersection {:?} (severity: {})",
-        accident.intersection_id, accident.severity
+        "[FlowAnalyzer] Accident reported on lane '{}' (severity: {})",
+        accident.lane.name, accident.severity
     );
 
-    // For example, if any vehicle's route includes a lane that leads to
-    // the accident intersection, we attempt to re-route it:
+    // Iterate over vehicles to check if they are in the accident lane.
     for (vehicle, route) in vehicles.iter_mut() {
-        // Check if the route eventually goes to the accident intersection
-        let heading_to_accident = route.iter().any(|lane| lane.to == accident.intersection_id);
-        if heading_to_accident {
-            println!(
-                "[FlowAnalyzer] Vehicle {} is affected by accident; re-routing.",
-                vehicle.id
-            );
-
-            // The simplest approach is to see where the vehicle is right now:
-            if let Some(current_lane) = route.first() {
-                let current_intersection = current_lane.from;
-                // Attempt to generate a new route that avoids the accident intersection.
-                // (One approach is to call your route_generation with a “blacklist” of intersections to avoid.)
-                if let Some(new_route) =
-                    crate::simulation_engine::route_generation::generate_shortest_lane_route(
-                        lanes,
-                        current_intersection,
-                        vehicle.exit_point, // or pick some other logic
-                    )
-                {
-                    // Replace the vehicle’s route with the new route
-                    *route = new_route;
-                    println!(
-                        "[FlowAnalyzer] Vehicle {} rerouted successfully.",
-                        vehicle.id
-                    );
-                }
+        // Check if the vehicle's current lane is the accident lane.
+        if let Some(current_lane) = route.first() {
+            if current_lane.name == accident.lane.name {
+                // Instead of re-routing, vehicles already on the accident lane will wait.
+                // The waiting time can be increased based on the severity of the accident.
+                // (For example, severity 1-5 could add 2-10 seconds respectively.)
+                let extra_wait_time = accident.severity as u32 * 2;
+                println!(
+                    "[FlowAnalyzer] Vehicle {} is on the accident lane. Increased waiting time by {} seconds.",
+                    vehicle.id, extra_wait_time
+                );
+                // If the Vehicle struct had a waiting time field, update it accordingly.
+                // TODO: vehicle.waiting_time += extra_wait_time;
+            } else if route.iter().any(|lane| lane.to == accident.lane.to) {
+                // For vehicles not yet on the accident lane, simply log that they will
+                println!(
+                    "[FlowAnalyzer] Vehicle {} is approaching the accident area. It will be re-routed by the update mechanism.",
+                    vehicle.id
+                );
             }
         }
     }
 }
 
-/// Aggregated traffic data.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficData {
     pub total_vehicles: usize,
-    pub average_lane_occupancy: f64,
+    pub lane_occupancy: HashMap<String, f64>,
     pub intersection_congestion: HashMap<IntersectionId, f64>,
-    // New field for average waiting times per intersection.
     pub intersection_waiting_time: HashMap<IntersectionId, f64>,
 }
 
-/// A congestion alert with a message and recommended action.
 #[derive(Debug, Clone)]
 pub struct CongestionAlert {
     pub intersection: Option<IntersectionId>,
     pub message: String,
     pub recommended_action: String,
 }
-
-/// ---------------- NEW: HistoricalData for Weighted Predictions ----------------
 
 #[derive(Debug)]
 pub struct HistoricalData {
@@ -96,7 +84,6 @@ impl HistoricalData {
         }
     }
 
-    /// Update occupancy history for each intersection with the latest occupancy value.
     pub fn update_occupancy(&mut self, data: &TrafficData) {
         for (&int_id, &occ) in &data.intersection_congestion {
             let deque = self
@@ -110,7 +97,6 @@ impl HistoricalData {
         }
     }
 
-    /// Update waiting time history using the current waiting times.
     pub fn update_waiting_time(&mut self, waiting_times: &HashMap<IntersectionId, f64>) {
         for (&int_id, &wt) in waiting_times {
             let deque = self
@@ -124,7 +110,6 @@ impl HistoricalData {
         }
     }
 
-    /// Compute the average occupancy for a given intersection from historical data.
     pub fn average_occupancy_for(&self, int_id: IntersectionId) -> f64 {
         if let Some(deque) = self.occupancy_history.get(&int_id) {
             if !deque.is_empty() {
@@ -135,7 +120,6 @@ impl HistoricalData {
         0.0
     }
 
-    /// Compute the average waiting time for a given intersection from historical data.
     pub fn average_waiting_time_for(&self, int_id: IntersectionId) -> f64 {
         if let Some(deque) = self.waiting_time_history.get(&int_id) {
             if !deque.is_empty() {
@@ -147,9 +131,6 @@ impl HistoricalData {
     }
 }
 
-/// ------------------------------------------------------------------------------
-
-/// Collect real-time data from lanes, vehicles, and intersections.
 pub fn collect_traffic_data(
     lanes: &[Lane],
     vehicles: &[Vehicle],
@@ -157,19 +138,16 @@ pub fn collect_traffic_data(
 ) -> TrafficData {
     let total_vehicles = vehicles.len();
 
-    // Compute average lane occupancy.
-    let mut total_occupancy = 0.0;
+    // Compute per-lane occupancy.
+    let mut lane_occupancy = HashMap::new();
     for lane in lanes {
-        let occ = lane.current_vehicle_length / lane.length_meters;
-        total_occupancy += occ;
+        // Calculate occupancy for each lane.
+        let occupancy = lane.current_vehicle_length / lane.length_meters;
+        lane_occupancy.insert(lane.name.to_string(), occupancy);
     }
-    let average_lane_occupancy = if lanes.is_empty() {
-        0.0
-    } else {
-        total_occupancy / lanes.len() as f64
-    };
 
     // Compute intersection-level congestion (average occupancy of outgoing lanes).
+    // This data is for calculating whether to increase/decrease traffic light timings.
     let mut intersection_congestion = HashMap::new();
     for intersection in intersections {
         let outgoing: Vec<_> = lanes.iter().filter(|l| l.from == intersection.id).collect();
@@ -185,8 +163,6 @@ pub fn collect_traffic_data(
         }
     }
 
-    // Compute intersection waiting times.
-    // Here we assume that each lane has a `waiting_time` field.
     let mut intersection_waiting_time = HashMap::new();
     for intersection in intersections {
         let outgoing: Vec<_> = lanes.iter().filter(|l| l.from == intersection.id).collect();
@@ -201,13 +177,12 @@ pub fn collect_traffic_data(
 
     TrafficData {
         total_vehicles,
-        average_lane_occupancy,
+        lane_occupancy,
         intersection_congestion,
-        intersection_waiting_time, // waiting time data added
+        intersection_waiting_time,
     }
 }
 
-/// This structure packages both current and predicted traffic data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficUpdate {
     pub current_data: TrafficData,
@@ -234,17 +209,20 @@ pub fn send_update_to_controller(update: TrafficUpdate, tx: &Sender<TrafficUpdat
 pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
     let mut alerts = Vec::new();
 
-    if data.average_lane_occupancy > 0.75 {
-        alerts.push(CongestionAlert {
-            intersection: None,
-            message: format!(
-                "System-wide congestion is high (occupancy: {:.2})",
-                data.average_lane_occupancy
-            ),
-            recommended_action: String::from("Reroute or adjust signals globally."),
-        });
+    for (lane_name, &occupancy) in &data.lane_occupancy {
+        if occupancy > 0.75 {
+            alerts.push(CongestionAlert {
+                intersection: None,
+                message: format!(
+                    "Lane '{}' is heavily congested (occupancy: {:.2})",
+                    lane_name, occupancy
+                ),
+                recommended_action: String::from("Vehicles on-route to the lane will be rerouted."),
+            });
+        }
     }
 
+    // Generate intersection-level alerts as before.
     for (&int_id, &cong) in &data.intersection_congestion {
         if cong > 0.80 {
             alerts.push(CongestionAlert {
@@ -253,7 +231,9 @@ pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
                     "Intersection {:?} is heavily congested ({:.2})",
                     int_id, cong
                 ),
-                recommended_action: String::from("Adjust light timings or partial rerouting."),
+                recommended_action: String::from(
+                    "Adjust traffic light timings to avoid congestion.",
+                ),
             });
         }
     }
@@ -297,11 +277,12 @@ pub fn predict_future_traffic_weighted(
 
     TrafficData {
         total_vehicles: data.total_vehicles,
-        average_lane_occupancy: data.average_lane_occupancy, // global occupancy remains unchanged
+        lane_occupancy: data.lane_occupancy.clone(),
         intersection_congestion: new_congestion,
         intersection_waiting_time: new_waiting_time,
     }
 }
+
 /// Send alerts to the control system (here we just print them).
 pub fn send_congestion_alerts(alerts: &[CongestionAlert]) {
     for alert in alerts {
@@ -321,43 +302,95 @@ pub struct RouteUpdate {
     pub reason: String,
 }
 
-// If occupancy is high, attempt to generate a new route that avoids certain intersections.
+/// If one or more lanes in the current route are congested, attempt to generate a new route
+/// that avoids those congested lanes and any lane with an accident.
+/// The caller should update the vehicle's route with the returned RouteUpdate.
 pub fn generate_route_update(
     data: &TrafficData,
     current_route: &[Lane],
-    avoid_intersections: &[IntersectionId],
     all_lanes: &[Lane],
+    accident_lane: Option<&Lane>,
+    vehicle_id: u64, // New parameter to specify which vehicle's route is being updated.
 ) -> Option<RouteUpdate> {
     let occupancy_threshold = 0.75;
-    if data.average_lane_occupancy > occupancy_threshold {
-        println!(
-            "High occupancy detected: {:.2}. Generating a less traffic route...",
-            data.average_lane_occupancy
-        );
-        let current_intersection = current_route.first().map(|lane| lane.from)?;
-        let target_intersection = current_route.last().map(|lane| lane.to)?;
-        if avoid_intersections.contains(&target_intersection) {
-            println!("Target intersection is in the avoid list. Skipping route update.");
-            return None;
-        }
 
-        // Call your route generation algorithm (defined in route_generation.rs).
-        if let Some(new_route) =
-            crate::simulation_engine::route_generation::generate_shortest_lane_route(
-                all_lanes,
-                current_intersection,
-                target_intersection,
-            )
-        {
-            return Some(RouteUpdate {
-                new_route,
-                reason: format!(
-                    "Average occupancy {:.2} exceeded threshold {:.2}; rerouting suggested.",
-                    data.average_lane_occupancy, occupancy_threshold
-                ),
-            });
-        }
+    // Identify congested lanes in the current route.
+    let congested_lanes: Vec<&Lane> = current_route
+        .iter()
+        .filter(|lane| {
+            data.lane_occupancy
+                .get(&lane.name)
+                .map(|&occ| occ > occupancy_threshold)
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // If no congested lanes are found, no route update is needed.
+    if congested_lanes.is_empty() {
+        return None;
     }
+
+    // Determine the start and target intersections from the current route.
+    let current_intersection = current_route.first().map(|lane| lane.from)?;
+    let target_intersection = current_route.last().map(|lane| lane.to)?;
+
+    println!(
+        "Vehicle {}: Congested lanes detected in current route: {:?}",
+        vehicle_id,
+        congested_lanes
+            .iter()
+            .map(|lane| lane.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // TEST: to check if it completely removes the congested lanes and not add them back
+    // Filter out lanes that are congested and, additionally, filter out the lane with an accident.
+    let filtered_lanes: Vec<Lane> = all_lanes
+        .iter()
+        .filter(|lane| {
+            // Exclude lane if its occupancy is above threshold.
+            let occupancy_ok = data
+                .lane_occupancy
+                .get(&lane.name)
+                .map(|&occ| occ <= occupancy_threshold)
+                .unwrap_or(true);
+            // Exclude lane if it is the accident lane.
+            let not_accident = if let Some(acc_lane) = accident_lane {
+                lane.name != acc_lane.name
+            } else {
+                true
+            };
+            occupancy_ok && not_accident
+        })
+        .cloned()
+        .collect();
+
+    // Generate a new route using the filtered lanes.
+    if let Some(new_route) =
+        crate::simulation_engine::route_generation::generate_shortest_lane_route(
+            &filtered_lanes,
+            current_intersection,
+            target_intersection,
+        )
+    {
+        // Print out the new route with the vehicle ID for debugging/logging.
+        println!(
+            "Vehicle {}: New route generated: {:?}",
+            vehicle_id,
+            new_route
+                .iter()
+                .map(|lane| lane.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        return Some(RouteUpdate {
+            new_route,
+            reason: format!(
+                "Congested lanes (occupancy > {:.2}) detected; rerouting suggested to avoid these segments.",
+                occupancy_threshold
+            ),
+        });
+    }
+
     None
 }
 

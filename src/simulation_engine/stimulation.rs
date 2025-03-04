@@ -8,30 +8,11 @@ use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
 use crossbeam_channel::Sender;
-use rand::prelude::*; // brings thread_rng() and Rng methods into scope
+use rand::prelude::*;
 use rand::rng;
 use rand::Rng;
 use std::collections::HashMap;
 use std::{thread, time::Duration};
-
-// TODO: not sure if need to keep or not.
-// Clear route intersections for emergency van.
-// fn clear_route_for_emergency(route: &[Lane], intersections: &mut [Intersection]) {
-//     for lane in route {
-//         if let Some(intersection) = intersections.iter_mut().find(|i| i.id == lane.from) {
-//             clear_intersection_for_emergency(intersection);
-//         }
-//     }
-// }
-
-// TODO: not sure if need to keep or not.
-// Restore intersections once emergency van passes.
-// fn restore_route_intersections(intersections: &mut [Intersection], passed_lane: &Lane) {
-//     // Restore the intersection that the passed_lane originates from.
-//     if let Some(intersection) = intersections.iter_mut().find(|i| i.id == passed_lane.from) {
-//         restore_intersection(intersection);
-//     }
-// }
 
 /// Spawn a vehicle at a random entry intersection, pick a random exit, and
 /// generate a route (a list of lanes) to get there.
@@ -80,11 +61,9 @@ fn spawn_vehicle(
         VehicleType::EmergencyVan => rng.random_range(60.0..120.0),
     };
 
-    // Create the vehicle.
     let vehicle = Vehicle::new(*next_vehicle_id, vehicle_type, entry.id, exit.id, speed);
     *next_vehicle_id += 1;
 
-    // Generate a route in terms of lanes.
     let lane_route = generate_shortest_lane_route(lanes, entry.id, exit.id)?;
 
     Some((vehicle, lane_route))
@@ -110,6 +89,7 @@ pub fn simulate_vehicle_movement(
 
         let current_lane = &route[0];
         let intersection_opt = intersections.iter().find(|i| i.id == current_lane.from);
+        // TODO: can move has a warning, need to handle
         let mut can_move = false;
 
         if let Some(intersection) = intersection_opt {
@@ -191,29 +171,30 @@ pub fn simulate_vehicle_movement(
     vehicles.retain(|(v, _)| !finished_vehicle_ids.contains(&v.id));
 }
 
-fn random_accident(
-    intersections: &Vec<Intersection>,
-    vehicles: &mut Vec<(Vehicle, Vec<Lane>)>,
-    lanes: &Vec<Lane>,
-) {
-    // If `rng()` is available in your version:
-    let mut my_rng = rng();
+/// Randomly generates an accident with 5% chance.
+/// A random lane is chosen from the available lanes, and an accident event is generated for that lane.
+/// Then, the accident event is handled by calling `handle_accident_event`.
+fn random_accident(vehicles: &mut Vec<(Vehicle, Vec<Lane>)>, lanes: &Vec<Lane>) -> Option<Lane> {
+    let mut my_rng = rand::rng();
 
-    // 5% chance
+    // 5% chance for an accident to occur.
     if my_rng.random_bool(0.05) {
-        if let Some(random_int) = intersections.choose(&mut my_rng) {
+        if let Some(random_lane) = lanes.choose(&mut my_rng) {
             let accident = AccidentEvent {
-                intersection_id: random_int.id,
-                severity: my_rng.random_range(1..=10),
+                lane: random_lane.clone(),
+                severity: my_rng.random_range(1..=5),
             };
             println!(
-                "Random accident generated at intersection {:?} with severity {}",
-                accident.intersection_id, accident.severity
+                "Random accident generated at lane '{}' with severity {}",
+                accident.lane.name, accident.severity
             );
-            // Handle the accident
+            // Handle the accident event.
             handle_accident_event(&accident, vehicles, lanes);
+            // Return the accident lane so that generate_route_update can avoid it.
+            return Some(random_lane.clone());
         }
     }
+    None
 }
 
 pub fn run_simulation(
@@ -254,7 +235,7 @@ pub fn run_simulation(
 
         // === 4. Random Accident Generation ===
         // This function will (with a 5% chance) generate an accident and call handle_accident_event.
-        random_accident(&intersections, &mut vehicles, &lanes);
+        random_accident(&mut vehicles, &lanes);
 
         // === 5. Flow Analyzer Integration ===
         // a. Collect current traffic data (using active vehicles).
@@ -280,20 +261,20 @@ pub fn run_simulation(
         // c. Analyze congestion and send alerts.
         let alerts = crate::flow_analyzer::predictive_model::analyze_traffic(&traffic_data);
         if !alerts.is_empty() {
-            println!("--- Congestion Alerts ---");
             crate::flow_analyzer::predictive_model::send_congestion_alerts(&alerts);
         }
 
+        // TODO: can consider to not print this message. Currently it prints all the lane occupancy.
         // d. Predict future traffic conditions using weighted average
-        let alpha = 0.8; // You can adjust this value
+        let alpha = 0.8;
         let predicted = crate::flow_analyzer::predictive_model::predict_future_traffic_weighted(
             &traffic_data,
             &historical,
             alpha,
         );
         println!(
-            "Predicted average lane occupancy (weighted): {:.2} (current: {:.2})",
-            predicted.average_lane_occupancy, traffic_data.average_lane_occupancy
+            "Predicted average lane occupancy (weighted): {:.2?} (current: {:.2?})",
+            predicted.lane_occupancy, traffic_data.lane_occupancy
         );
 
         // f. Package and send the update to the Traffic Light Controller.
@@ -305,21 +286,15 @@ pub fn run_simulation(
         send_update_to_controller(update, &tx);
 
         // e. Actively generate route updates for vehicles passing through congested intersections.
-        //    Define congested intersections as those with occupancy > 0.80.
-        let congested_intersections: Vec<_> = traffic_data
-            .intersection_congestion
-            .iter()
-            .filter(|&(_, &occ)| occ > 0.80)
-            .map(|(&int_id, _)| int_id)
-            .collect();
-
+        let accident_lane = random_accident(&mut vehicles, &lanes);
         for (vehicle, route) in vehicles.iter_mut() {
             if let Some(route_update) =
                 crate::flow_analyzer::predictive_model::generate_route_update(
                     &traffic_data,
                     route,
-                    &congested_intersections,
                     &lanes,
+                    accident_lane.as_ref(),
+                    vehicle.id,
                 )
             {
                 println!("Vehicle {} re-routed: {}", vehicle.id, route_update.reason);
@@ -335,7 +310,7 @@ pub fn run_simulation(
                 "Recommend adjusting intersection {:?}: add {} seconds green.",
                 adj.intersection_id, adj.add_seconds_green
             );
-            // Here you could call a method on traffic_controller to apply the adjustment.
+            // TODO: change traffic light duration here
         }
 
         // === 6. Pause Before Next Tick ===
