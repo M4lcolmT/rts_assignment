@@ -7,7 +7,7 @@ use crossbeam_channel::unbounded;
 use flow_analyzer::predictive_model::TrafficUpdate;
 use simulation_engine::intersections::create_intersections;
 use simulation_engine::lanes::create_lanes;
-use simulation_engine::stimulation;
+use simulation_engine::simulation;
 use std::thread;
 use std::time::Duration;
 
@@ -32,7 +32,7 @@ fn main() {
         }
     });
 
-    stimulation::run_simulation(intersections, lanes, tx);
+    simulation::run_simulation(intersections, lanes, tx);
     loop {
         thread::sleep(Duration::from_secs(5));
     }

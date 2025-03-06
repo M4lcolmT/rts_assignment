@@ -1,6 +1,6 @@
+// vehicles.rs
 use crate::simulation_engine::intersections::IntersectionId;
 
-/// Different types of vehicles in the simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VehicleType {
     Car,
@@ -9,7 +9,6 @@ pub enum VehicleType {
     EmergencyVan,
 }
 
-/// Represents a vehicle traveling through the grid.
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     pub id: u64,
@@ -18,11 +17,11 @@ pub struct Vehicle {
     pub exit_point: IntersectionId,
     pub speed: f64,
     pub length: f64,
-    /// Priority (e.g., 0 for normal, higher for emergency vehicles).
-    // pub priority: u8,
-    // TODO: maybe add waiting time
-    // TODO: maybe add re-route state flag to not allow re-routing for the vehicle again until it reaches the next intersection or makes noticeable progress.
     pub is_emergency: bool,
+    pub rerouted: bool,
+    pub waiting_logged: bool,   // already used for waiting message printing
+    pub added_to_lane: bool,    // used to add occupancy only once while waiting
+    pub accident_handled: bool, // NEW: marks if this vehicle has been processed for the current accident
 }
 
 impl Vehicle {
@@ -33,13 +32,12 @@ impl Vehicle {
         entry_point: IntersectionId,
         exit_point: IntersectionId,
         speed: f64,
-        // priority: u8,
     ) -> Self {
         let (length, is_emergency) = match vehicle_type {
             VehicleType::Car => (4.5, false),
             VehicleType::Bus => (12.0, false),
             VehicleType::Truck => (16.0, false),
-            VehicleType::EmergencyVan => (5.5, true), // Emergency vehicle flag
+            VehicleType::EmergencyVan => (5.5, true),
         };
 
         Self {
@@ -49,8 +47,11 @@ impl Vehicle {
             exit_point,
             speed,
             length,
-            // priority,
             is_emergency,
+            rerouted: false,
+            waiting_logged: false,
+            added_to_lane: false,
+            accident_handled: false, // Initialize as not processed
         }
     }
 }
