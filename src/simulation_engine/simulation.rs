@@ -3,7 +3,7 @@
 use crate::control_system::traffic_light_controller::TrafficLightController;
 use crate::flow_analyzer::predictive_model::{
     analyze_traffic, collect_traffic_data, current_timestamp, generate_signal_adjustments,
-    send_congestion_alerts, send_update_to_controller, AccidentData, TrafficData, TrafficUpdate,
+    send_congestion_alerts, send_update_to_controller, TrafficUpdate,
 };
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
@@ -346,6 +346,7 @@ pub fn run_simulation(
         }
 
         // (Optional) Send an update to the Traffic Light Controller.
+        // TODO: verify if working or not
         let update = TrafficUpdate {
             current_data: traffic_data.clone(),
             predicted_data: crate::flow_analyzer::predictive_model::predict_future_traffic_weighted(

@@ -1,20 +1,14 @@
 use crate::simulation_engine::intersections::IntersectionId;
 use crate::simulation_engine::vehicles::Vehicle;
 
-/// A lane connecting two intersections (or an outside entry/exit).
 #[derive(Debug, Clone)]
 pub struct Lane {
-    /// A descriptive name for debugging or logging.
     pub name: String,
-    /// The intersection from which the lane starts.
     pub from: IntersectionId,
-    /// The intersection to which the lane goes.
     pub to: IntersectionId,
-    /// Length of the lane in meters.
     pub length_meters: f64,
     /// Current occupied vehicle length in meters (to model capacity).
     pub current_vehicle_length: f64,
-    /// Whether an emergency vehicle is present on this lane.
     pub has_emergency_vehicle: bool,
     pub has_accident: bool,
     pub waiting_time: f64,

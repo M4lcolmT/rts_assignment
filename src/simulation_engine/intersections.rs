@@ -7,20 +7,9 @@ pub enum IntersectionControl {
     Normal,       // Standard intersection without traffic lights
     TrafficLight, // Intersection with traffic light control
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LightState {
-    Green,
-    Yellow,
-    Red,
-}
-
-/// Represents a traffic intersection (node).
 #[derive(Debug, Clone)]
 pub struct Intersection {
-    /// Unique identifier for the intersection.
     pub id: IntersectionId,
-    /// Intersection Name
     pub name: String,
     /// Whether vehicles can enter at this intersection.
     pub is_entry: bool,
@@ -28,10 +17,6 @@ pub struct Intersection {
     pub is_exit: bool,
     /// Defines if the intersection has a traffic light or is a normal junction.
     pub control: IntersectionControl,
-    /// The current traffic light state (if applicable).
-    pub light_state: Option<LightState>,
-    /// Flag to check if an emergency vehicle is currently in the intersection.
-    pub has_emergency_vehicle: bool,
     waiting_time: f64,
 }
 
@@ -45,33 +30,13 @@ impl Intersection {
         is_exit: bool,
         control: IntersectionControl,
     ) -> Self {
-        let light_state = match control {
-            IntersectionControl::TrafficLight => Some(LightState::Red),
-            _ => None,
-        };
-
         Self {
             id: IntersectionId(row, col),
             name,
             is_entry,
             is_exit,
             control,
-            light_state,
-            has_emergency_vehicle: false,
-            waiting_time: 0.0, // Initialize waiting time to 0.0
-        }
-    }
-
-    /// Updates the traffic light state (if the intersection has one).
-    pub fn update_light(&mut self) {
-        if self.control == IntersectionControl::TrafficLight && !self.has_emergency_vehicle {
-            if let Some(state) = self.light_state {
-                self.light_state = match state {
-                    LightState::Red => Some(LightState::Green),
-                    LightState::Green => Some(LightState::Yellow),
-                    LightState::Yellow => Some(LightState::Red),
-                };
-            }
+            waiting_time: 0.0,
         }
     }
 
@@ -79,37 +44,7 @@ impl Intersection {
     pub fn avg_waiting_time(&self) -> f64 {
         self.waiting_time
     }
-
-    /// Sets the average waiting time at this intersection.
-    pub fn set_waiting_time(&mut self, new_waiting_time: f64) {
-        self.waiting_time = new_waiting_time;
-    }
 }
-
-// TODO: remove and put inside traffic light controller
-// A helper function to simulate stopping vehicles at an intersection.
-// pub fn clear_intersection_for_emergency(intersection: &mut Intersection) {
-//     if !intersection.has_emergency_vehicle {
-//         println!(
-//             "Clearing intersection {:?} for emergency: switching light to Red.",
-//             intersection.id
-//         );
-//     }
-//     intersection.light_state = Some(LightState::Red);
-//     intersection.has_emergency_vehicle = true;
-// }
-
-// TODO: remove and put inside traffic light controller
-// A helper function to restore an intersection's traffic light.
-// pub fn restore_intersection(intersection: &mut Intersection) {
-//     println!(
-//         "Intersection {:?} is now restored to normal operation: switching light to Green.",
-//         intersection.id
-//     );
-//     intersection.light_state = Some(LightState::Green); // Restore the light to Green
-//     intersection.has_emergency_vehicle = false; // No longer an emergency
-//     intersection.update_light(); // Update the light if needed
-// }
 
 pub fn create_intersections() -> Vec<Intersection> {
     vec![

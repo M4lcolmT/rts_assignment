@@ -22,7 +22,7 @@ pub struct Vehicle {
     pub is_accident: bool,
     pub severity: i8,
     pub current_lane: String,
-    // pub waiting_time: Option<u64>
+    // TODO: pub waiting_time: Option<u64>
     pub accident_timestamp: Option<u64>,
 }
 

@@ -1,10 +1,7 @@
-use crate::simulation_engine::intersections::{
-    Intersection, IntersectionControl, IntersectionId,
-};
+use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
 use std::collections::HashMap;
 
-/// A single traffic light phase
 #[derive(Debug, Clone)]
 pub struct TrafficLightPhase {
     pub green_lanes: Vec<String>,
@@ -16,9 +13,7 @@ pub struct IntersectionController {
     pub phases: Vec<TrafficLightPhase>,
     pub current_phase_index: usize,
     pub elapsed_in_phase: u64,
-    /// All lanes from this intersection
     pub all_lanes: Vec<String>,
-    /// Emergency override: multiple lanes can be green
     pub emergency_override: Option<Vec<String>>,
 }
 
@@ -105,7 +100,6 @@ impl IntersectionController {
     }
 }
 
-/// Manages traffic lights for all intersections
 pub struct TrafficLightController {
     pub controllers: HashMap<IntersectionId, IntersectionController>,
 }
@@ -189,9 +183,9 @@ impl TrafficLightController {
             //    belongs to this same intersection.
             if let Some(em_lane_obj) = all_lanes.iter().find(|l| l.name == emergency_lane) {
                 // Opposite lane name might be something like "(3,0) -> (2,0)"
-                let opposite_name = format!("({},{}) -> ({},{})",
-                    em_lane_obj.to.0, em_lane_obj.to.1,
-                    em_lane_obj.from.0, em_lane_obj.from.1
+                let opposite_name = format!(
+                    "({},{}) -> ({},{})",
+                    em_lane_obj.to.0, em_lane_obj.to.1, em_lane_obj.from.0, em_lane_obj.from.1
                 );
                 // Check if this intersection actually controls that lane
                 if ctrl.all_lanes.contains(&opposite_name) {
