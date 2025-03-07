@@ -1,1 +1,1 @@
-pub mod predictive_model;
+pub mod traffic_analyzer;

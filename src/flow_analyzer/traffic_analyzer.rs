@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::simulation_engine::intersections::{Intersection, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
-use crate::simulation_engine::vehicles::{self, Vehicle};
+use crate::simulation_engine::route_generation::generate_shortest_lane_route;
+use crate::simulation_engine::vehicles::Vehicle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficData {
@@ -391,11 +392,7 @@ pub fn generate_route_update(
 
     // Generate a new route using the filtered lanes.
     if let Some(new_route) =
-        crate::simulation_engine::route_generation::generate_shortest_lane_route(
-            &filtered_lanes,
-            current_intersection,
-            target_intersection,
-        )
+        generate_shortest_lane_route(&filtered_lanes, current_intersection, target_intersection)
     {
         println!(
             "Vehicle {:?} {}: New route generated: {:?}",

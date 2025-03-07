@@ -1,17 +1,16 @@
 // simulation.rs
 
 use crate::control_system::traffic_light_controller::TrafficLightController;
-use crate::flow_analyzer::predictive_model::{
-    analyze_traffic, collect_traffic_data, current_timestamp, generate_signal_adjustments,
-    send_congestion_alerts, send_update_to_controller, TrafficUpdate,
+use crate::flow_analyzer::traffic_analyzer::{
+    analyze_traffic, collect_traffic_data, current_timestamp, generate_route_update,
+    generate_signal_adjustments, predict_future_traffic_weighted, send_congestion_alerts,
+    send_update_to_controller, HistoricalData, TrafficUpdate,
 };
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
 use crossbeam_channel::Sender;
-use rand::prelude::*;
-use rand::rng;
 use rand::Rng;
 use std::collections::HashMap;
 use std::{thread, time::Duration};
@@ -274,7 +273,7 @@ pub fn run_simulation(
     let mut traffic_controller = TrafficLightController::initialize(intersections.clone(), &lanes);
 
     // Create HistoricalData to store occupancy snapshots for weighted predictions.
-    let mut historical = crate::flow_analyzer::predictive_model::HistoricalData::new(10);
+    let mut historical = HistoricalData::new(10);
 
     loop {
         // === 1. Vehicle Spawning: Spawn 6 vehicles per tick.
@@ -304,11 +303,7 @@ pub fn run_simulation(
 
         // === 4. Flow Analyzer Integration ===
         let active_vehicles: Vec<Vehicle> = vehicles.iter().map(|(v, _)| v.clone()).collect();
-        let traffic_data = crate::flow_analyzer::predictive_model::collect_traffic_data(
-            &lanes,
-            &active_vehicles,
-            &intersections,
-        );
+        let traffic_data = collect_traffic_data(&lanes, &active_vehicles, &intersections);
         let waiting_times: HashMap<IntersectionId, f64> = intersections
             .iter()
             .map(|intersection| (intersection.id, intersection.avg_waiting_time()))
@@ -332,13 +327,7 @@ pub fn run_simulation(
         }
 
         for (vehicle, route) in vehicles.iter_mut() {
-            if let Some(route_update) =
-                crate::flow_analyzer::predictive_model::generate_route_update(
-                    &traffic_data,
-                    route,
-                    &lanes,
-                    vehicle,
-                )
+            if let Some(route_update) = generate_route_update(&traffic_data, route, &lanes, vehicle)
             {
                 println!("Vehicle {} re-routed: {}", vehicle.id, route_update.reason);
                 *route = route_update.new_route;
@@ -349,11 +338,7 @@ pub fn run_simulation(
         // TODO: verify if working or not
         let update = TrafficUpdate {
             current_data: traffic_data.clone(),
-            predicted_data: crate::flow_analyzer::predictive_model::predict_future_traffic_weighted(
-                &traffic_data,
-                &historical,
-                0.8,
-            ),
+            predicted_data: predict_future_traffic_weighted(&traffic_data, &historical, 0.8),
             timestamp: current_timestamp(),
         };
         send_update_to_controller(update, &tx);
