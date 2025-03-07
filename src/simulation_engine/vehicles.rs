@@ -1,4 +1,3 @@
-// vehicles.rs
 use crate::simulation_engine::intersections::IntersectionId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,9 +18,12 @@ pub struct Vehicle {
     pub length: f64,
     pub is_emergency: bool,
     pub rerouted: bool,
-    pub waiting_logged: bool,   // already used for waiting message printing
-    pub added_to_lane: bool,    // used to add occupancy only once while waiting
-    pub accident_handled: bool, // NEW: marks if this vehicle has been processed for the current accident
+    pub is_in_lane: bool,
+    pub is_accident: bool,
+    pub severity: i8,
+    pub current_lane: String,
+    // pub waiting_time: Option<u64>
+    pub accident_timestamp: Option<u64>,
 }
 
 impl Vehicle {
@@ -49,9 +51,11 @@ impl Vehicle {
             length,
             is_emergency,
             rerouted: false,
-            waiting_logged: false,
-            added_to_lane: false,
-            accident_handled: false, // Initialize as not processed
+            is_in_lane: false,
+            is_accident: false,
+            severity: 0,
+            current_lane: "".to_string(),
+            accident_timestamp: None,
         }
     }
 }

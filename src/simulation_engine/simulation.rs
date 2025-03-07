@@ -2,13 +2,10 @@
 
 use crate::control_system::traffic_light_controller::TrafficLightController;
 use crate::flow_analyzer::predictive_model::{
-    current_timestamp, send_update_to_controller, TrafficData, TrafficUpdate,
-    collect_traffic_data, analyze_traffic, send_congestion_alerts,
-    generate_signal_adjustments, handle_accident_event, AccidentEvent,
+    analyze_traffic, collect_traffic_data, current_timestamp, generate_signal_adjustments,
+    send_congestion_alerts, send_update_to_controller, AccidentData, TrafficData, TrafficUpdate,
 };
-use crate::simulation_engine::intersections::{
-    Intersection, IntersectionControl, IntersectionId,
-};
+use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
@@ -64,8 +61,7 @@ fn spawn_vehicle(
         VehicleType::EmergencyVan => rng.random_range(60.0..120.0),
     };
 
-    // Create the vehicle. (Assumes Vehicle::new also initializes fields such as 'rerouted',
-    // 'waiting_logged', and 'added_to_lane' to their default false values.)
+    // Create the vehicle.
     let vehicle = Vehicle::new(*next_vehicle_id, vehicle_type, entry.id, exit.id, speed);
     *next_vehicle_id += 1;
 
@@ -82,13 +78,92 @@ pub fn simulate_vehicle_movement(
 ) {
     let mut finished_vehicle_ids = Vec::new();
 
+    // First, handle crashed vehicles and update lane accident status
     for (vehicle, route) in vehicles.iter_mut() {
         if route.is_empty() {
-            finished_vehicle_ids.push(vehicle.id);
+            continue; // Skip vehicles that have completed their route
+        }
+
+        // Get the current lane
+        let current_lane = &route[0];
+
+        // Check for accident resolution
+        if vehicle.is_accident {
+            if let Some(accident_time) = vehicle.accident_timestamp {
+                let current_time = current_timestamp();
+                let elapsed_seconds = current_time - accident_time;
+                let wait_time_seconds = (vehicle.severity as u64) * 1; // 1 second per severity level
+
+                if elapsed_seconds >= wait_time_seconds {
+                    // Time to remove the accident vehicle
+                    if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
+                        lane.remove_vehicle(&vehicle);
+                        // Clear the accident flag after removal
+                        lane.has_accident = false;
+                        println!(
+                            "Crashed Vehicle {:?} {} has been removed from: {} after {} seconds",
+                            vehicle.vehicle_type, vehicle.id, lane.name, elapsed_seconds
+                        );
+
+                        // Mark the vehicle for removal from simulation
+                        finished_vehicle_ids.push(vehicle.id);
+                    }
+                } else {
+                    println!(
+                        "Crashed Vehicle {:?} {} on lane: {} - Waiting for removal ({}/{} seconds)",
+                        vehicle.vehicle_type,
+                        vehicle.id,
+                        current_lane.name,
+                        elapsed_seconds,
+                        wait_time_seconds
+                    );
+                }
+            }
+        }
+    }
+
+    // Then handle movement for all vehicles
+    for (vehicle, route) in vehicles.iter_mut() {
+        if route.is_empty() || finished_vehicle_ids.contains(&vehicle.id) {
+            if !finished_vehicle_ids.contains(&vehicle.id) {
+                finished_vehicle_ids.push(vehicle.id);
+            }
             continue;
         }
 
+        // Get the current lane
         let current_lane = &route[0];
+
+        // Skip movement logic for crashed vehicles already handled above
+        if vehicle.is_accident {
+            continue;
+        }
+
+        // Check if the lane has an accident (any crashed vehicle)
+        let lane_has_accident =
+            if let Some(lane) = lanes.iter().find(|ln| ln.name == current_lane.name) {
+                lane.has_accident
+            } else {
+                false
+            };
+
+        // If the lane has an accident, prevent all vehicles on this lane from moving
+        if lane_has_accident {
+            // Make sure the vehicle is registered as being in the lane
+            if !vehicle.is_in_lane {
+                if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
+                    lane.add_vehicle(&vehicle);
+                }
+                println!(
+                    "Vehicle {:?} {} is waiting at lane: {} (lane has an accident)",
+                    vehicle.vehicle_type, vehicle.id, current_lane.name
+                );
+                vehicle.is_in_lane = true;
+            }
+            continue; // Skip the rest of the movement logic
+        }
+
+        // Regular movement logic
         let intersection_opt = intersections.iter().find(|i| i.id == current_lane.from);
         let mut can_move = false;
 
@@ -112,21 +187,47 @@ pub fn simulate_vehicle_movement(
             can_move = true;
         }
 
-        if can_move {
-            // If the vehicle had been added to the lane occupancy, remove it.
-            if vehicle.added_to_lane {
-                if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                    lane.remove_vehicle(vehicle);
-                }
-                vehicle.added_to_lane = false;
+        // Random accident generation - vehicles only get accidents if they're moving and not already in one
+        let mut my_rng = rand::rng();
+        if can_move && !vehicle.is_accident && my_rng.random_bool(0.01) {
+            if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
+                vehicle.is_accident = true;
+                vehicle.severity = my_rng.random_range(1..=5);
+                vehicle.accident_timestamp = Some(current_timestamp());
+                lane.has_accident = true;
+                println!(
+                    "An accident occurred. Vehicle {:?} {} crashed on: {} with severity {}",
+                    vehicle.vehicle_type, vehicle.id, lane.name, vehicle.severity
+                );
+                // Vehicle had an accident this tick, so it can't move anymore
+                can_move = false;
             }
-            // Reset the waiting message flag.
-            vehicle.waiting_logged = false;
+        }
+
+        // Vehicle can only move if it's allowed to and not in an accident
+        if can_move && !vehicle.is_accident {
+            vehicle.current_lane = current_lane.name.clone();
+
+            // Remove vehicle from lane occupancy if it was already added
+            if vehicle.is_in_lane {
+                if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
+                    lane.remove_vehicle(&vehicle);
+                    vehicle.is_in_lane = false;
+                }
+            }
+
+            // Remove the current lane from the route as the vehicle moves forward
             let moving_lane = route.remove(0);
             println!(
                 "Vehicle {:?} {} is moving on lane: {} (from {:?} to {:?})",
-                vehicle.vehicle_type, vehicle.id, moving_lane.name, moving_lane.from, moving_lane.to
+                vehicle.vehicle_type,
+                vehicle.id,
+                moving_lane.name,
+                moving_lane.from,
+                moving_lane.to
             );
+
+            // If the route is now empty, mark the vehicle as finished
             if route.is_empty() {
                 println!(
                     "Vehicle {:?} {} has reached its destination at intersection: {:?}",
@@ -135,50 +236,31 @@ pub fn simulate_vehicle_movement(
                 finished_vehicle_ids.push(vehicle.id);
             }
         } else {
-            // When waiting, print the waiting message only once.
-            if !vehicle.waiting_logged {
-                println!(
-                    "Vehicle {:?} {} is waiting at lane: {} (traffic light is red)",
-                    vehicle.vehicle_type, vehicle.id, current_lane.name
-                );
-                vehicle.waiting_logged = true;
-            }
-            // Add vehicle occupancy only once.
-            if !vehicle.added_to_lane {
+            // Vehicle is not moving (red light, accident, or other reason)
+            if !vehicle.is_in_lane {
                 if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                    lane.add_vehicle(vehicle);
+                    lane.add_vehicle(&vehicle);
                 }
-                vehicle.added_to_lane = true;
+
+                let reason = if vehicle.is_accident {
+                    "vehicle is in accident"
+                } else if lane_has_accident {
+                    "lane has an accident"
+                } else {
+                    "traffic light is red"
+                };
+
+                println!(
+                    "Vehicle {:?} {} is waiting at lane: {} ({})",
+                    vehicle.vehicle_type, vehicle.id, current_lane.name, reason
+                );
+                vehicle.is_in_lane = true;
             }
         }
     }
 
+    // Remove finished vehicles from the simulation
     vehicles.retain(|(v, _)| !finished_vehicle_ids.contains(&v.id));
-}
-
-/// Randomly generates an accident with a 5% chance.
-/// If an accident occurs, an AccidentEvent is created and returned.
-fn random_accident(
-    vehicles: &mut Vec<(Vehicle, Vec<Lane>)>,
-    lanes: &Vec<Lane>,
-    data: &TrafficData,
-) -> Option<AccidentEvent> {
-    let mut my_rng = rand::rng();
-    // 5% chance for an accident to occur.
-    if my_rng.random_bool(0.05) {
-        if let Some(random_lane) = lanes.choose(&mut my_rng) {
-            let accident = AccidentEvent {
-                lane: random_lane.clone(),
-                severity: my_rng.random_range(1..=5),
-            };
-            println!(
-                "Random accident generated at lane '{}' with severity {}",
-                accident.lane.name, accident.severity
-            );
-            return Some(accident);
-        }
-    }
-    None
 }
 
 /// Main simulation loop.
@@ -197,10 +279,10 @@ pub fn run_simulation(
     loop {
         // === 1. Vehicle Spawning: Spawn 6 vehicles per tick.
         for _ in 0..6 {
-            if let Some((vehicle, route)) = spawn_vehicle(&intersections, &lanes, &mut next_vehicle_id)
+            if let Some((vehicle, route)) =
+                spawn_vehicle(&intersections, &lanes, &mut next_vehicle_id)
             {
-                let route_names: Vec<String> =
-                    route.iter().map(|lane| lane.name.clone()).collect();
+                let route_names: Vec<String> = route.iter().map(|lane| lane.name.clone()).collect();
                 println!(
                     "Spawned vehicle {:?} {} from intersection {:?} to intersection {:?} with route: {:?}",
                     vehicle.vehicle_type, vehicle.id, vehicle.entry_point, vehicle.exit_point, route_names
@@ -249,9 +331,18 @@ pub fn run_simulation(
             // TODO: implement the actual adjustment logic if needed.
         }
 
-        // === 5. Accident Handling ===
-        if let Some(accident) = random_accident(&mut vehicles, &lanes, &traffic_data) {
-            handle_accident_event(&accident, &mut vehicles, &lanes, &traffic_data);
+        for (vehicle, route) in vehicles.iter_mut() {
+            if let Some(route_update) =
+                crate::flow_analyzer::predictive_model::generate_route_update(
+                    &traffic_data,
+                    route,
+                    &lanes,
+                    vehicle,
+                )
+            {
+                println!("Vehicle {} re-routed: {}", vehicle.id, route_update.reason);
+                *route = route_update.new_route;
+            }
         }
 
         // (Optional) Send an update to the Traffic Light Controller.

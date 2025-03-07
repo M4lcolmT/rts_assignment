@@ -1,85 +1,17 @@
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::simulation_engine::intersections::{Intersection, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
-use crate::simulation_engine::vehicles::Vehicle;
-
-#[derive(Debug, Clone)]
-pub struct AccidentEvent {
-    pub lane: Lane,
-    pub severity: u8,
-}
-
-/// When an accident occurs, vehicles already on the accident lane must wait,
-/// with waiting time increased based on severity. Upcoming vehicles will avoid this lane
-/// (via generate_route_update logic). Thus, this handler no longer re-routes vehicles.
-pub fn handle_accident_event(
-    accident: &AccidentEvent,
-    vehicles: &mut Vec<(Vehicle, Vec<Lane>)>,
-    all_lanes: &[Lane],
-    data: &TrafficData, // Traffic data is now required
-) {
-    println!(
-        "[FlowAnalyzer] Accident reported on lane '{}' (severity: {})",
-        accident.lane.name, accident.severity
-    );
-
-    for (vehicle, route) in vehicles.iter_mut() {
-        if route.is_empty() {
-            continue;
-        }
-
-        // If the vehicle's current lane is the accident lane, do not re-route.
-        // Instead, increase its waiting time.
-        if route.first().map(|lane| lane.name == accident.lane.name).unwrap_or(false) {
-            let extra_wait_time = accident.severity as u32 * 2; // e.g., 2 seconds per severity level
-            println!(
-                "[FlowAnalyzer] Vehicle {} is on the accident lane. Increasing waiting time by {} seconds.",
-                vehicle.id, extra_wait_time
-            );
-            // TODO: Update the vehicle's waiting time (if your Vehicle struct has such a field).
-            // For example: vehicle.waiting_time += extra_wait_time;
-        }
-        // If the vehicle is approaching the accident area, attempt to re-route.
-        else if route.iter().any(|lane| lane.to == accident.lane.to) {
-            println!(
-                "[FlowAnalyzer] Vehicle {} is approaching the accident area. Attempting to re-route to avoid the accident.",
-                vehicle.id
-            );
-            if let Some(route_update) = generate_route_update(
-                data,
-                route,
-                all_lanes,
-                Some(&accident.lane),
-                vehicle,
-            ) {
-                println!(
-                    "[FlowAnalyzer] Vehicle {} new route: {:?}",
-                    vehicle.id,
-                    route_update
-                        .new_route
-                        .iter()
-                        .map(|l| l.name.as_str())
-                        .collect::<Vec<_>>()
-                );
-                *route = route_update.new_route;
-            } else {
-                println!(
-                    "[FlowAnalyzer] Vehicle {} could not be re-routed away from the accident area.",
-                    vehicle.id
-                );
-            }
-        }
-    }
-}
+use crate::simulation_engine::vehicles::{self, Vehicle};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficData {
     pub total_vehicles: usize,
     pub lane_occupancy: HashMap<String, f64>,
+    pub accident_lanes: HashSet<String>,
     pub intersection_congestion: HashMap<IntersectionId, f64>,
     pub intersection_waiting_time: HashMap<IntersectionId, f64>,
 }
@@ -170,6 +102,13 @@ pub fn collect_traffic_data(
         lane_occupancy.insert(lane.name.to_string(), occupancy);
     }
 
+    let mut accident_lanes = HashSet::new();
+    for lane in lanes {
+        if lane.has_accident {
+            accident_lanes.insert(lane.name.to_string());
+        }
+    }
+
     // Compute intersection-level congestion (average occupancy of outgoing lanes).
     // This data is for calculating whether to increase/decrease traffic light timings.
     let mut intersection_congestion = HashMap::new();
@@ -202,6 +141,7 @@ pub fn collect_traffic_data(
     TrafficData {
         total_vehicles,
         lane_occupancy,
+        accident_lanes,
         intersection_congestion,
         intersection_waiting_time,
     }
@@ -302,6 +242,7 @@ pub fn predict_future_traffic_weighted(
     TrafficData {
         total_vehicles: data.total_vehicles,
         lane_occupancy: data.lane_occupancy.clone(),
+        accident_lanes: data.accident_lanes.clone(),
         intersection_congestion: new_congestion,
         intersection_waiting_time: new_waiting_time,
     }
@@ -330,14 +271,38 @@ pub struct RouteUpdate {
 /// that avoids those congested lanes and any lane with an accident.
 /// The caller should update the vehicle's route with the returned RouteUpdate.
 pub fn generate_route_update(
-    data: &TrafficData,
+    traffic_data: &TrafficData,
     current_route: &[Lane],
     all_lanes: &[Lane],
-    accident_lane: Option<&Lane>,
-    vehicle: &mut Vehicle, // Now passing the vehicle itself to check/update the reroute flag.
+    vehicle: &mut Vehicle,
 ) -> Option<RouteUpdate> {
     // Only attempt a reroute if the vehicle hasn't been rerouted already.
     if vehicle.rerouted {
+        return None;
+    }
+
+    // Determine the current lane based on whether the vehicle is in accident mode.
+    let (current_lane, current_lane_index) = if vehicle.is_accident {
+        // Find the index of the lane that matches the vehicle's current_lane.
+        if let Some(index) = current_route
+            .iter()
+            .position(|lane| lane.name == vehicle.current_lane)
+        {
+            (&current_route[index], index)
+        } else {
+            return None;
+        }
+    } else {
+        // Use the first lane in the current route.
+        (current_route.first()?, 0)
+    };
+
+    // If the vehicle is already in an accident lane, do not attempt a reroute.
+    if traffic_data.accident_lanes.contains(&current_lane.name) {
+        println!(
+            "Vehicle {:?} {}: Already in an accident lane {}, no rerouting.",
+            vehicle.vehicle_type, vehicle.id, current_lane.name
+        );
         return None;
     }
 
@@ -347,42 +312,79 @@ pub fn generate_route_update(
     let congested_lanes: Vec<&Lane> = current_route
         .iter()
         .filter(|lane| {
-            data.lane_occupancy
+            traffic_data
+                .lane_occupancy
                 .get(&lane.name)
                 .map(|&occ| occ > occupancy_threshold)
                 .unwrap_or(false)
         })
         .collect();
 
-    // If no congested lanes are found, no route update is needed.
-    if congested_lanes.is_empty() {
+    // Identify accident lanes:
+    // - If vehicle is in accident mode, only consider lanes after the current lane.
+    // - Otherwise, consider all lanes in the route.
+    let accident_lanes_in_route: Vec<&Lane> = if vehicle.is_accident {
+        current_route
+            .iter()
+            .skip(current_lane_index + 1)
+            .filter(|lane| traffic_data.accident_lanes.contains(&lane.name))
+            .collect()
+    } else {
+        current_route
+            .iter()
+            .filter(|lane| traffic_data.accident_lanes.contains(&lane.name))
+            .collect()
+    };
+
+    // If no congested lanes and no accident lanes are detected, no update is needed.
+    if congested_lanes.is_empty() && accident_lanes_in_route.is_empty() {
         return None;
     }
 
+    // Log detected congestions and accidents.
+    if !congested_lanes.is_empty() {
+        println!(
+            "Vehicle {:?} {}: Congested lanes detected in current route: {:?}",
+            vehicle.vehicle_type,
+            vehicle.id,
+            congested_lanes
+                .iter()
+                .map(|lane| lane.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    if !accident_lanes_in_route.is_empty() {
+        println!(
+            "Vehicle {:?} {}: Accident lanes detected in the {} route: {:?}",
+            vehicle.vehicle_type,
+            vehicle.id,
+            if vehicle.is_accident {
+                "remaining"
+            } else {
+                "current"
+            },
+            accident_lanes_in_route
+                .iter()
+                .map(|lane| lane.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
     // Determine start and target intersections from the current route.
-    let current_intersection = current_route.first()?.from;
+    let current_intersection = current_lane.from;
     let target_intersection = current_route.last()?.to;
 
-    println!(
-        "Vehicle {}: Congested lanes detected in current route: {:?}",
-        vehicle.id,
-        congested_lanes
-            .iter()
-            .map(|lane| lane.name.as_str())
-            .collect::<Vec<_>>()
-    );
-
-    // Filter out lanes that are congested and, if an accident is present, avoid that lane.
+    // Filter out lanes that are congested or have accidents.
     let filtered_lanes: Vec<Lane> = all_lanes
         .iter()
         .filter(|lane| {
-            let occupancy_ok = data
+            let occupancy_ok = traffic_data
                 .lane_occupancy
                 .get(&lane.name)
                 .map(|&occ| occ <= occupancy_threshold)
                 .unwrap_or(true);
-            let not_accident = accident_lane.map_or(true, |acc_lane| lane.name != acc_lane.name);
-            occupancy_ok && not_accident
+            let no_accident = !traffic_data.accident_lanes.contains(&lane.name);
+            occupancy_ok && no_accident
         })
         .cloned()
         .collect();
@@ -396,7 +398,8 @@ pub fn generate_route_update(
         )
     {
         println!(
-            "Vehicle {}: New route generated: {:?}",
+            "Vehicle {:?} {}: New route generated: {:?}",
+            vehicle.vehicle_type,
             vehicle.id,
             new_route
                 .iter()
@@ -405,13 +408,18 @@ pub fn generate_route_update(
         );
         // Mark the vehicle as having been rerouted.
         vehicle.rerouted = true;
-        return Some(RouteUpdate {
-            new_route,
-            reason: format!(
-                "Congested lanes (occupancy > {:.2}) detected; rerouting suggested to avoid these segments.",
+        let mut reason = String::new();
+        if !congested_lanes.is_empty() {
+            reason.push_str(&format!(
+                "Congested lanes (occupancy > {:.2}) detected; ",
                 occupancy_threshold
-            ),
-        });
+            ));
+        }
+        if !accident_lanes_in_route.is_empty() {
+            reason.push_str("Accident lanes detected; ");
+        }
+        reason.push_str("rerouting suggested to avoid these segments.");
+        return Some(RouteUpdate { new_route, reason });
     }
 
     None

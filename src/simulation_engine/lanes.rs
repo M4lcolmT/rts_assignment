@@ -16,6 +16,7 @@ pub struct Lane {
     pub current_vehicle_length: f64,
     /// Whether an emergency vehicle is present on this lane.
     pub has_emergency_vehicle: bool,
+    pub has_accident: bool,
     pub waiting_time: f64,
 }
 
@@ -28,6 +29,7 @@ impl Lane {
             length_meters,
             current_vehicle_length: 0.0,
             has_emergency_vehicle: false,
+            has_accident: false,
             waiting_time: 0.0,
         }
     }
