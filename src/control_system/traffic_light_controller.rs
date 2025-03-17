@@ -1,7 +1,10 @@
+// traffic_controller_system.rs
+
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
 use std::collections::HashMap;
 
+// We keep your original structures:
 #[derive(Debug, Clone)]
 pub struct TrafficLightPhase {
     pub green_lanes: Vec<String>,
@@ -33,10 +36,8 @@ impl IntersectionController {
         }
     }
 
-    /// Update the phase timer if no emergency override is active.
     pub fn update(&mut self) {
         if self.emergency_override.is_some() {
-            // Skip normal phase cycling during emergency override
             return;
         }
         self.elapsed_in_phase += 1;
@@ -48,23 +49,19 @@ impl IntersectionController {
         }
     }
 
-    /// Apply current phase or emergency override
     pub fn apply_current_phase(&self) {
         if let Some(ref override_lanes) = self.emergency_override {
-            // If there's an emergency override, *only* these lanes are green
             let red_lanes: Vec<String> = self
                 .all_lanes
                 .iter()
                 .filter(|lane| !override_lanes.contains(lane))
                 .cloned()
                 .collect();
-
             println!(
                 "Intersection {:?} emergency override: Green for lanes: {:?} and Red for lanes: {:?}",
                 self.intersection.id, override_lanes, red_lanes
             );
         } else {
-            // Normal phase
             let current_green = &self.phases[self.current_phase_index].green_lanes;
             let red_lanes: Vec<String> = self
                 .all_lanes
@@ -72,7 +69,6 @@ impl IntersectionController {
                 .filter(|lane| !current_green.contains(lane))
                 .cloned()
                 .collect();
-
             println!(
                 "Intersection {:?} switching to phase {}: Green for lanes: {:?} and Red for lanes: {:?}",
                 self.intersection.id,
@@ -120,7 +116,6 @@ impl TrafficLightController {
                     continue;
                 }
 
-                // One phase per lane for demonstration
                 let phases: Vec<TrafficLightPhase> = connected_lanes
                     .iter()
                     .map(|ln| TrafficLightPhase {
@@ -141,21 +136,17 @@ impl TrafficLightController {
         Self { controllers }
     }
 
-    /// Update all intersections if no emergency override
     pub fn update_all(&mut self) {
         for controller in self.controllers.values_mut() {
             controller.update();
         }
     }
 
-    /// Check if lane is green for the intersection
     pub fn is_lane_green(&self, intersection_id: IntersectionId, lane_name: &str) -> bool {
         if let Some(ctrl) = self.controllers.get(&intersection_id) {
-            // If there's an override, only lanes in that override are green
             if let Some(ref override_lanes) = ctrl.emergency_override {
                 return override_lanes.contains(&lane_name.to_string());
             }
-            // Otherwise, check the normal phase
             let current_phase = &ctrl.phases[ctrl.current_phase_index];
             current_phase.green_lanes.contains(&lane_name.to_string())
         } else {
@@ -163,8 +154,6 @@ impl TrafficLightController {
         }
     }
 
-    /// Determine which lanes are non-conflicting with the given "emergency lane" and set them green.
-    /// For a simple “two‐way” logic, we let the lane from->to and the lane to->from be green.
     pub fn set_emergency_override(
         &mut self,
         intersection_id: IntersectionId,
@@ -172,35 +161,99 @@ impl TrafficLightController {
         all_lanes: &[Lane],
     ) {
         if let Some(ctrl) = self.controllers.get_mut(&intersection_id) {
-            let mut green_lanes = vec![];
-
-            // 1) Always include the emergency lane
-            green_lanes.push(emergency_lane.to_string());
-
-            // 2) Also allow the opposite direction (if it exists) to be green
-            //    if it doesn’t conflict. That means if the emergency lane is
-            //    "(2,0) -> (3,0)", we also allow "(3,0) -> (2,0)" if that lane
-            //    belongs to this same intersection.
+            let mut green_lanes = vec![emergency_lane.to_string()];
             if let Some(em_lane_obj) = all_lanes.iter().find(|l| l.name == emergency_lane) {
-                // Opposite lane name might be something like "(3,0) -> (2,0)"
                 let opposite_name = format!(
                     "({},{}) -> ({},{})",
                     em_lane_obj.to.0, em_lane_obj.to.1, em_lane_obj.from.0, em_lane_obj.from.1
                 );
-                // Check if this intersection actually controls that lane
                 if ctrl.all_lanes.contains(&opposite_name) {
                     green_lanes.push(opposite_name);
                 }
             }
-
             ctrl.set_emergency_override(green_lanes);
         }
     }
 
-    /// Clear override
     pub fn clear_emergency_override(&mut self, intersection_id: IntersectionId) {
         if let Some(ctrl) = self.controllers.get_mut(&intersection_id) {
             ctrl.clear_emergency_override();
         }
     }
+}
+
+// === AMIQIP ADDITION ===
+// Suppose we want to run a loop that listens for "congestion_alerts" and
+// publishes "light_adjustments". We'll define a small function to do that.
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CongestionAlertMsg {
+    pub intersection_id: Option<(i8, i8)>,
+    pub message: String,
+    pub recommended_action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightAdjustmentMsg {
+    pub intersection_id: (i8, i8),
+    pub add_seconds_green: u32,
+}
+
+use amiquip::{
+    Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
+};
+use std::thread;
+
+pub fn start_traffic_controller_rabbitmq() -> amiquip::Result<()> {
+    let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
+    let channel = connection.open_channel(None)?;
+
+    // We'll consume from "congestion_alerts"
+    channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
+    let queue = channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
+    let consumer = queue.consume(ConsumerOptions::default())?;
+
+    // We'll also publish to "light_adjustments"
+    channel.queue_declare("light_adjustments", QueueDeclareOptions::default())?;
+    let exchange = Exchange::direct(&channel);
+
+    println!("[TrafficController] Waiting for congestion alerts on 'congestion_alerts'...");
+
+    for message in consumer.receiver() {
+        match message {
+            ConsumerMessage::Delivery(delivery) => {
+                if let Ok(json_str) = std::str::from_utf8(&delivery.body) {
+                    if let Ok(alert) = serde_json::from_str::<CongestionAlertMsg>(json_str) {
+                        println!("[TrafficController] Got CongestionAlertMsg: {:?}", alert);
+
+                        // Example logic: for each alert, create a LightAdjustmentMsg
+                        if let Some(int_id) = alert.intersection_id {
+                            let adjustment = LightAdjustmentMsg {
+                                intersection_id: int_id,
+                                add_seconds_green: 10,
+                            };
+                            if let Ok(adj_json) = serde_json::to_string(&adjustment) {
+                                exchange.publish(Publish::new(
+                                    adj_json.as_bytes(),
+                                    "light_adjustments",
+                                ))?;
+                                println!(
+                                    "[TrafficController] Published LightAdjustment: {:?}",
+                                    adjustment
+                                );
+                            }
+                        }
+                    }
+                }
+                consumer.ack(delivery)?;
+            }
+            other => {
+                println!("[TrafficController] Consumer ended: {:?}", other);
+                break;
+            }
+        }
+    }
+
+    connection.close()
 }

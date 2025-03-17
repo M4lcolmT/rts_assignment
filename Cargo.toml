@@ -13,3 +13,16 @@ rand = "0.9.0"
 crossbeam-channel = "0.5.14"
 log = "0.4.26"
 env_logger = "0.11.6"
+amiquip = "0.4.2"
+
+[[bin]]
+name = "simulation_main"
+path = "src/bin/simulation_main.rs"
+
+[[bin]]
+name = "traffic_analyzer_main"
+path = "src/bin/traffic_analyzer_main.rs"
+
+[[bin]]
+name = "traffic_light_controller_main"
+path = "src/bin/traffic_light_controller_main.rs"

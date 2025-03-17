@@ -1,3 +1,5 @@
+// traffic_analyzer.rs
+
 use crossbeam_channel::Sender;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -8,6 +10,15 @@ use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::Vehicle;
 
+// === AMIQIP ADDITION ===
+use amiquip::{
+    Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
+    Result as AmiquipResult,
+};
+use serde_json;
+use std::thread;
+
+/// We can reuse your data structs for publishing/consuming
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficData {
     pub total_vehicles: usize,
@@ -17,7 +28,14 @@ pub struct TrafficData {
     pub intersection_waiting_time: HashMap<IntersectionId, f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficUpdate {
+    pub current_data: TrafficData,
+    pub predicted_data: TrafficData,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CongestionAlert {
     pub intersection: Option<IntersectionId>,
     pub message: String,
@@ -148,14 +166,6 @@ pub fn collect_traffic_data(
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficUpdate {
-    pub current_data: TrafficData,
-    pub predicted_data: TrafficData,
-    pub timestamp: u64,
-}
-
-/// Returns the current timestamp (in seconds since the UNIX epoch).
 pub fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -163,17 +173,16 @@ pub fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-/// Sends a traffic update to the Traffic Light Controller via a channel.
 pub fn send_update_to_controller(update: TrafficUpdate, tx: &Sender<TrafficUpdate>) {
+    // [ORIGINAL LOGIC UNCHANGED]
     if let Err(e) = tx.send(update) {
         log::info!("Failed to send traffic update to controller: {}", e);
     }
 }
 
-/// Analyze traffic data to detect congestion. Returns a list of alerts.
 pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
+    // [ORIGINAL LOGIC UNCHANGED]
     let mut alerts = Vec::new();
-
     for (lane_name, &occupancy) in &data.lane_occupancy {
         if occupancy > 0.75 {
             alerts.push(CongestionAlert {
@@ -186,8 +195,6 @@ pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
             });
         }
     }
-
-    // Generate intersection-level alerts as before.
     for (&int_id, &cong) in &data.intersection_congestion {
         if cong > 0.80 {
             alerts.push(CongestionAlert {
@@ -202,7 +209,6 @@ pub fn analyze_traffic(data: &TrafficData) -> Vec<CongestionAlert> {
             });
         }
     }
-
     alerts
 }
 
@@ -249,8 +255,8 @@ pub fn predict_future_traffic_weighted(
     }
 }
 
-/// Send alerts to the control system (here we just print them).
 pub fn send_congestion_alerts(alerts: &[CongestionAlert]) {
+    // [ORIGINAL LOGIC UNCHANGED: just prints them]
     for alert in alerts {
         println!("--- Congestion Alert ---");
         if let Some(int_id) = alert.intersection {
@@ -261,7 +267,6 @@ pub fn send_congestion_alerts(alerts: &[CongestionAlert]) {
     }
 }
 
-/// Represents a suggested route update.
 #[derive(Debug, Clone)]
 pub struct RouteUpdate {
     pub new_route: Vec<Lane>,
@@ -422,15 +427,14 @@ pub fn generate_route_update(
     None
 }
 
-/// Represents a traffic light adjustment recommendation.
 #[derive(Debug, Clone)]
 pub struct SignalAdjustment {
     pub intersection_id: IntersectionId,
     pub add_seconds_green: u32,
 }
 
-/// Generate recommended traffic light adjustments based on congestion.
 pub fn generate_signal_adjustments(data: &TrafficData) -> Vec<SignalAdjustment> {
+    // [ORIGINAL LOGIC UNCHANGED]
     let threshold = 0.80;
     let mut adjustments = Vec::new();
     for (&int_id, &occ) in &data.intersection_congestion {
@@ -442,4 +446,63 @@ pub fn generate_signal_adjustments(data: &TrafficData) -> Vec<SignalAdjustment> 
         }
     }
     adjustments
+}
+
+/// ========== AMIQIP DEMO SECTION ==========
+/// This function runs a loop that consumes from the "traffic_data" queue
+/// and processes each TrafficUpdate. Then it optionally publishes alerts or
+/// recommended actions to other queues.
+pub fn start_analyzer_rabbitmq() -> AmiquipResult<()> {
+    let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
+    let channel = connection.open_channel(None)?;
+
+    // Declare or get the queue we consume from
+    let queue = channel.queue_declare("traffic_data", QueueDeclareOptions::default())?;
+    let consumer = queue.consume(ConsumerOptions::default())?;
+    println!("[Analyzer] Waiting for TrafficUpdate messages on 'traffic_data'...");
+
+    // We can also prepare an exchange or queue for publishing alerts
+    let exchange = Exchange::direct(&channel);
+    channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
+    // Or we might also publish to "light_adjustments" if we want to directly
+    // send recommended actions to the traffic controller.
+
+    // In a real system, you'd keep a HistoricalData instance here to do predictions, etc.
+    // For brevity, we’ll just do basic congestion analysis on each message.
+    for message in consumer.receiver() {
+        match message {
+            ConsumerMessage::Delivery(delivery) => {
+                if let Ok(json_str) = std::str::from_utf8(&delivery.body) {
+                    if let Ok(update) = serde_json::from_str::<TrafficUpdate>(json_str) {
+                        println!("[Analyzer] Got TrafficUpdate: {:?}", update);
+
+                        // 1) Analyze the current_data
+                        let alerts = analyze_traffic(&update.current_data);
+                        if !alerts.is_empty() {
+                            // 2) For demonstration, publish each alert as JSON to "congestion_alerts"
+                            for alert in &alerts {
+                                if let Ok(alert_json) = serde_json::to_string(alert) {
+                                    exchange.publish(Publish::new(
+                                        alert_json.as_bytes(),
+                                        "congestion_alerts",
+                                    ))?;
+                                }
+                            }
+                            println!(
+                                "[Analyzer] Published {} congestion alerts to 'congestion_alerts'",
+                                alerts.len()
+                            );
+                        }
+                    }
+                }
+                consumer.ack(delivery)?;
+            }
+            other => {
+                println!("[Analyzer] Consumer ended: {:?}", other);
+                break;
+            }
+        }
+    }
+
+    connection.close()
 }
