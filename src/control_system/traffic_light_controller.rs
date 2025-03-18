@@ -1,7 +1,9 @@
 // traffic_controller_system.rs
 
+use crate::flow_analyzer::traffic_analyzer::CongestionAlert;
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // We keep your original structures:
@@ -182,57 +184,47 @@ impl TrafficLightController {
     }
 }
 
-// === AMIQIP ADDITION ===
-// Suppose we want to run a loop that listens for "congestion_alerts" and
-// publishes "light_adjustments". We'll define a small function to do that.
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CongestionAlertMsg {
-    pub intersection_id: Option<(i8, i8)>,
-    pub message: String,
-    pub recommended_action: String,
-}
-
+// === AMIQIP ===
+// Listens for "congestion_alerts" and publishes "light_adjustments".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightAdjustmentMsg {
-    pub intersection_id: (i8, i8),
+    pub intersection_id: String,
     pub add_seconds_green: u32,
 }
 
 use amiquip::{
     Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
+    Result as AmiquipResult,
 };
-use std::thread;
 
-pub fn start_traffic_controller_rabbitmq() -> amiquip::Result<()> {
+pub fn start_traffic_controller_rabbitmq() -> AmiquipResult<()> {
     let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
     let channel = connection.open_channel(None)?;
 
-    // We'll consume from "congestion_alerts"
-    channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
-    let queue = channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
-    let consumer = queue.consume(ConsumerOptions::default())?;
-
-    // We'll also publish to "light_adjustments"
-    channel.queue_declare("light_adjustments", QueueDeclareOptions::default())?;
     let exchange = Exchange::direct(&channel);
 
+    let congestion_alert_queue =
+        channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
+    let consumer = congestion_alert_queue.consume(ConsumerOptions::default())?;
     println!("[TrafficController] Waiting for congestion alerts on 'congestion_alerts'...");
 
+    channel.queue_declare("light_adjustments", QueueDeclareOptions::default())?;
+
+    // 5) Start consuming CongestionAlert messages
     for message in consumer.receiver() {
+        println!("received message from simulation to light controller");
         match message {
             ConsumerMessage::Delivery(delivery) => {
                 if let Ok(json_str) = std::str::from_utf8(&delivery.body) {
-                    if let Ok(alert) = serde_json::from_str::<CongestionAlertMsg>(json_str) {
-                        println!("[TrafficController] Got CongestionAlertMsg: {:?}", alert);
+                    if let Ok(alert) = serde_json::from_str::<CongestionAlert>(json_str) {
+                        println!("[TrafficController] Got CongestionAlert: {:?}", alert);
 
-                        // Example logic: for each alert, create a LightAdjustmentMsg
-                        if let Some(int_id) = alert.intersection_id {
+                        if let Some(int_id) = alert.intersection {
                             let adjustment = LightAdjustmentMsg {
-                                intersection_id: int_id,
+                                intersection_id: int_id.to_string(),
                                 add_seconds_green: 10,
                             };
+
                             if let Ok(adj_json) = serde_json::to_string(&adjustment) {
                                 exchange.publish(Publish::new(
                                     adj_json.as_bytes(),

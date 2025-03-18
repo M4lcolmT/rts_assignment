@@ -4,25 +4,22 @@ use crate::control_system::traffic_light_controller::TrafficLightController;
 use crate::flow_analyzer::traffic_analyzer::{
     analyze_traffic, collect_traffic_data, current_timestamp, generate_route_update,
     generate_signal_adjustments, predict_future_traffic_weighted, send_congestion_alerts,
-    send_update_to_controller, HistoricalData, TrafficData, TrafficUpdate,
+    HistoricalData, TrafficUpdate,
 };
-use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
+use crate::simulation_engine::intersections::{Intersection, IntersectionControl};
 use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
-use crossbeam_channel::Sender;
+
+use amiquip::{
+    Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
+};
 use rand::Rng;
+use serde_json;
 use std::collections::HashMap;
 use std::{thread, time::Duration};
 
-// === AMIQIP ADDITION ===
-use amiquip::{
-    Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
-    Result as AmiquipResult,
-};
-use serde_json;
-
-// We'll define the queue names for clarity:
+// AMIQUIP queue names
 const QUEUE_TRAFFIC_DATA: &str = "traffic_data";
 const QUEUE_LIGHT_ADJUSTMENTS: &str = "light_adjustments";
 
@@ -33,7 +30,6 @@ fn spawn_vehicle(
     lanes: &[Lane],
     next_vehicle_id: &mut u64,
 ) -> Option<(Vehicle, Vec<Lane>)> {
-    // [ORIGINAL LOGIC UNCHANGED]
     let entry_points: Vec<_> = intersections.iter().filter(|i| i.is_entry).collect();
     let exit_points: Vec<_> = intersections.iter().filter(|i| i.is_exit).collect();
 
@@ -81,7 +77,6 @@ pub fn simulate_vehicle_movement(
     lanes: &mut [Lane],
     traffic_controller: &mut TrafficLightController,
 ) {
-    // [ORIGINAL LOGIC UNCHANGED]
     let mut finished_vehicle_ids = Vec::new();
 
     // First, handle crashed vehicles and update lane accident status
@@ -248,22 +243,18 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
     let mut traffic_controller = TrafficLightController::initialize(intersections.clone(), &lanes);
     let mut historical = HistoricalData::new(10);
 
-    // 1) Connect to RabbitMQ
     let mut rabbit_connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")
         .expect("RabbitMQ connection");
 
-    // 2) Open a channel for publishing
     let publish_channel = rabbit_connection
         .open_channel(None)
         .expect("open publish channel");
     let exchange = Exchange::direct(&publish_channel);
 
-    // 3) Declare the "traffic_data" queue for publishing updates
     publish_channel
         .queue_declare(QUEUE_TRAFFIC_DATA, QueueDeclareOptions::default())
         .expect("declare traffic_data queue");
 
-    // 4) Open a second channel for consuming "light_adjustments"
     let consumer_channel = rabbit_connection
         .open_channel(None)
         .expect("open consumer channel");
@@ -272,7 +263,7 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
         .queue_declare(QUEUE_LIGHT_ADJUSTMENTS, QueueDeclareOptions::default())
         .expect("declare light_adjustments queue");
 
-    // 5) Spawn a thread to listen for LightAdjustment messages
+    // Spawn a thread to listen for LightAdjustment messages
     {
         thread::spawn(move || {
             let queue = consumer_channel
@@ -307,9 +298,9 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
         });
     }
 
-    // 6) Main simulation loop
+    // Simulation Loop
     loop {
-        // a) Spawn some vehicles
+        // a) Spawn vehicles
         for _ in 0..6 {
             if let Some((vehicle, route)) =
                 spawn_vehicle(&intersections, &lanes, &mut next_vehicle_id)
@@ -341,9 +332,9 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
         // d) Flow Analyzer logic
         let active_vehicles: Vec<Vehicle> = vehicles.iter().map(|(v, _)| v.clone()).collect();
         let traffic_data = collect_traffic_data(&lanes, &active_vehicles, &intersections);
-        let waiting_times: HashMap<IntersectionId, f64> = intersections
+        let waiting_times: HashMap<String, f64> = intersections
             .iter()
-            .map(|i| (i.id, i.avg_waiting_time()))
+            .map(|i| (format!("{:?}", i.id), i.avg_waiting_time()))
             .collect();
 
         historical.update_occupancy(&traffic_data);
@@ -376,13 +367,14 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
             predicted_data: predict_future_traffic_weighted(&traffic_data, &historical, 0.8),
             timestamp: current_timestamp(),
         };
-        // send_update_to_controller(update.clone(), &tx);
 
-        // f) Also publish the update via RabbitMQ
+        // f) Publish traffic data to "traffic_data" queue every second.
         if let Ok(payload) = serde_json::to_vec(&update) {
             exchange
                 .publish(Publish::new(&payload, QUEUE_TRAFFIC_DATA))
                 .expect("publish traffic_data");
+        } else {
+            println!("ERROR serializing update");
         }
 
         // g) Sleep
