@@ -37,7 +37,7 @@ impl Lane {
 
     /// Attempt to add a vehicle onto this lane.
     pub fn add_vehicle(&mut self, vehicle: &Vehicle) -> bool {
-        if vehicle.is_emergency {
+        if vehicle.is_emergency() {
             self.has_emergency_vehicle = true;
             true
         } else if self.can_add_vehicle(vehicle) {
@@ -53,7 +53,7 @@ impl Lane {
         if self.current_vehicle_length >= vehicle.length {
             self.current_vehicle_length -= vehicle.length;
         }
-        if vehicle.is_emergency {
+        if vehicle.is_emergency() {
             self.has_emergency_vehicle = false;
         }
     }

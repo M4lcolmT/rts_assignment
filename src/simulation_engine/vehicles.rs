@@ -16,18 +16,20 @@ pub struct Vehicle {
     pub exit_point: IntersectionId,
     pub speed: f64,
     pub length: f64,
-    pub is_emergency: bool,
     pub rerouted: bool,
     pub is_in_lane: bool,
     pub is_accident: bool,
     pub severity: i8,
     pub current_lane: String,
-    // TODO: pub waiting_time: Option<u64>
     pub accident_timestamp: Option<u64>,
+    // Accumulated waiting time (in seconds)
+    pub waiting_time: u64,
+    // When the vehicle started waiting (None if not waiting)
+    pub waiting_start: Option<u64>,
 }
 
 impl Vehicle {
-    /// Creates a new vehicle with predefined lengths based on type.
+    /// Creates a new vehicle with predefined length based on type.
     pub fn new(
         id: u64,
         vehicle_type: VehicleType,
@@ -35,11 +37,11 @@ impl Vehicle {
         exit_point: IntersectionId,
         speed: f64,
     ) -> Self {
-        let (length, is_emergency) = match vehicle_type {
-            VehicleType::Car => (4.5, false),
-            VehicleType::Bus => (12.0, false),
-            VehicleType::Truck => (16.0, false),
-            VehicleType::EmergencyVan => (5.5, true),
+        let length = match vehicle_type {
+            VehicleType::Car => 4.5,
+            VehicleType::Bus => 12.0,
+            VehicleType::Truck => 16.0,
+            VehicleType::EmergencyVan => 5.5,
         };
 
         Self {
@@ -49,13 +51,19 @@ impl Vehicle {
             exit_point,
             speed,
             length,
-            is_emergency,
             rerouted: false,
             is_in_lane: false,
             is_accident: false,
             severity: 0,
             current_lane: "".to_string(),
             accident_timestamp: None,
+            waiting_time: 0,
+            waiting_start: None,
         }
+    }
+
+    /// Returns true if the vehicle is an emergency vehicle.
+    pub fn is_emergency(&self) -> bool {
+        self.vehicle_type == VehicleType::EmergencyVan
     }
 }

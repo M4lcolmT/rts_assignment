@@ -1,37 +1,88 @@
 // simulation.rs
-
 use crate::control_system::traffic_light_controller::TrafficLightController;
-use crate::flow_analyzer::traffic_analyzer::{
-    analyze_traffic, collect_traffic_data, current_timestamp, generate_route_update,
-    generate_signal_adjustments, predict_future_traffic_weighted, send_congestion_alerts,
-    HistoricalData, TrafficUpdate,
-};
+use crate::shared_data::current_timestamp;
+use crate::shared_data::{TrafficData, TrafficUpdate, VehicleData};
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl};
 use crate::simulation_engine::lanes::Lane;
 use crate::simulation_engine::route_generation::generate_shortest_lane_route;
 use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
 
-use amiquip::{
-    Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
-};
-use rand::Rng;
+use amiquip::{Connection, Exchange, Publish, QueueDeclareOptions};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use serde_json;
-use std::collections::HashMap;
-use std::{thread, time::Duration};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use tokio::time::{sleep, Duration};
 
-// AMIQUIP queue names
 const QUEUE_TRAFFIC_DATA: &str = "traffic_data";
-const QUEUE_LIGHT_ADJUSTMENTS: &str = "light_adjustments";
 
-/// Spawn a vehicle at a random entry intersection, pick a random exit, and
-/// generate a route (a list of lanes) to get there.
-fn spawn_vehicle(
-    intersections: &[Intersection],
+/// Collect current traffic data from lanes and intersections, including vehicle data.
+pub fn collect_traffic_data(
     lanes: &[Lane],
+    intersections: &[Intersection],
+    vehicle_data: Vec<VehicleData>,
+) -> TrafficData {
+    let mut lane_occupancy = HashMap::new();
+    for lane in lanes {
+        let occupancy = lane.current_vehicle_length / lane.length_meters;
+        lane_occupancy.insert(lane.name.clone(), occupancy);
+    }
+
+    let mut accident_lanes = HashSet::new();
+    for lane in lanes {
+        if lane.has_accident {
+            accident_lanes.insert(lane.name.clone());
+        }
+    }
+
+    let mut intersection_congestion = HashMap::new();
+    for intersection in intersections {
+        let outgoing: Vec<_> = lanes.iter().filter(|l| l.from == intersection.id).collect();
+        if outgoing.is_empty() {
+            intersection_congestion.insert(format!("{:?}", intersection.id), 0.0);
+        } else {
+            let sum_occ: f64 = outgoing
+                .iter()
+                .map(|l| l.current_vehicle_length / l.length_meters)
+                .sum();
+            let avg = sum_occ / outgoing.len() as f64;
+            intersection_congestion.insert(format!("{:?}", intersection.id), avg);
+        }
+    }
+
+    let mut intersection_waiting_time = HashMap::new();
+    for intersection in intersections {
+        let outgoing: Vec<_> = lanes.iter().filter(|l| l.from == intersection.id).collect();
+        if outgoing.is_empty() {
+            intersection_waiting_time.insert(format!("{:?}", intersection.id), 0.0);
+        } else {
+            let total_waiting: f64 = outgoing.iter().map(|l| l.waiting_time).sum();
+            let avg_waiting = total_waiting / outgoing.len() as f64;
+            intersection_waiting_time.insert(format!("{:?}", intersection.id), avg_waiting);
+        }
+    }
+
+    TrafficData {
+        lane_occupancy,
+        accident_lanes,
+        intersection_congestion,
+        intersection_waiting_time,
+        vehicle_data,
+    }
+}
+
+/// Spawns a new vehicle and computes its route based on predicted traffic data.
+fn spawn_vehicle(
+    intersections: &Arc<Mutex<Vec<Intersection>>>,
+    lanes: &Arc<Mutex<Vec<Lane>>>,
+    current_traffic_data: &TrafficData,
     next_vehicle_id: &mut u64,
 ) -> Option<(Vehicle, Vec<Lane>)> {
-    let entry_points: Vec<_> = intersections.iter().filter(|i| i.is_entry).collect();
-    let exit_points: Vec<_> = intersections.iter().filter(|i| i.is_exit).collect();
+    let intersections_guard = intersections.lock().unwrap();
+    let lanes_guard = lanes.lock().unwrap();
+    let entry_points: Vec<_> = intersections_guard.iter().filter(|i| i.is_entry).collect();
+    let exit_points: Vec<_> = intersections_guard.iter().filter(|i| i.is_exit).collect();
 
     if entry_points.is_empty() || exit_points.is_empty() {
         return None;
@@ -48,9 +99,9 @@ fn spawn_vehicle(
     let rand_val: f64 = rng.random_range(0.0..1.0);
     let vehicle_type = if rand_val < 0.50 {
         VehicleType::Car
-    } else if rand_val < 0.75 {
+    } else if rand_val < 0.81 {
         VehicleType::Truck
-    } else if rand_val < 0.90 {
+    } else if rand_val < 0.99 {
         VehicleType::Bus
     } else {
         VehicleType::EmergencyVan
@@ -66,309 +117,326 @@ fn spawn_vehicle(
     let vehicle = Vehicle::new(*next_vehicle_id, vehicle_type, entry.id, exit.id, speed);
     *next_vehicle_id += 1;
 
-    let lane_route = generate_shortest_lane_route(lanes, entry.id, exit.id)?;
-    Some((vehicle, lane_route))
+    let entry_id = entry.id;
+    let exit_id = exit.id;
+    drop(intersections_guard);
+
+    let filtered_lanes: Vec<Lane> = lanes_guard
+        .clone()
+        .into_iter()
+        .filter(|lane| {
+            if lane.has_accident {
+                return false;
+            }
+            if let Some(&occ) = current_traffic_data.lane_occupancy.get(&lane.name) {
+                if occ > 0.75 {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let route = generate_shortest_lane_route(&filtered_lanes, entry_id, exit_id)?;
+    Some((vehicle, route))
 }
 
-/// Simulates vehicle movement along its lane route.
-pub fn simulate_vehicle_movement(
-    vehicles: &mut Vec<(Vehicle, Vec<Lane>)>,
-    intersections: &mut [Intersection],
-    lanes: &mut [Lane],
-    traffic_controller: &mut TrafficLightController,
+/// Simulates a vehicle’s journey as an independent async task.
+/// The vehicle pushes its event data into the shared vehicle_events vector when it reaches its destination or crashes.
+async fn simulate_vehicle_journey(
+    mut vehicle: Vehicle,
+    mut route: Vec<Lane>,
+    intersections: Arc<Mutex<Vec<Intersection>>>,
+    lanes: Arc<Mutex<Vec<Lane>>>,
+    traffic_controller: Arc<Mutex<TrafficLightController>>,
+    active_ids: Arc<Mutex<HashSet<u64>>>,
+    vehicle_events: Arc<Mutex<Vec<VehicleData>>>,
 ) {
-    let mut finished_vehicle_ids = Vec::new();
-
-    // First, handle crashed vehicles and update lane accident status
-    for (vehicle, route) in vehicles.iter_mut() {
-        if route.is_empty() {
-            continue;
-        }
-        let current_lane = &route[0];
-        if vehicle.is_accident {
-            if let Some(accident_time) = vehicle.accident_timestamp {
-                let current_time = current_timestamp();
-                let elapsed_seconds = current_time - accident_time;
-                let wait_time_seconds = (vehicle.severity as u64) * 1;
-
-                if elapsed_seconds >= wait_time_seconds {
-                    if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                        lane.remove_vehicle(&vehicle);
-                        lane.has_accident = false;
-                        println!(
-                            "Crashed Vehicle {:?} {} has been removed from: {} after {} seconds",
-                            vehicle.vehicle_type, vehicle.id, lane.name, elapsed_seconds
-                        );
-                        finished_vehicle_ids.push(vehicle.id);
-                    }
+    let mut rng = SmallRng::seed_from_u64(1);
+    while let Some(current_lane) = route.first() {
+        let mut add_success = false;
+        {
+            let mut lanes_guard = lanes.lock().unwrap();
+            if let Some(lane) = lanes_guard.iter_mut().find(|l| l.name == current_lane.name) {
+                if lane.add_vehicle(&vehicle) {
+                    vehicle.is_in_lane = true;
+                    add_success = true;
                 } else {
                     println!(
-                        "Crashed Vehicle {:?} {} on lane: {} - Waiting for removal ({}/{} seconds)",
-                        vehicle.vehicle_type,
-                        vehicle.id,
-                        current_lane.name,
-                        elapsed_seconds,
-                        wait_time_seconds
+                        "Vehicle {:?} {} could not be added to lane {} (capacity full). Retrying...",
+                        vehicle.vehicle_type, vehicle.id, lane.name
                     );
                 }
             }
         }
-    }
-
-    // Then handle movement for all vehicles
-    for (vehicle, route) in vehicles.iter_mut() {
-        if route.is_empty() || finished_vehicle_ids.contains(&vehicle.id) {
-            if !finished_vehicle_ids.contains(&vehicle.id) {
-                finished_vehicle_ids.push(vehicle.id);
-            }
+        if !add_success {
+            sleep(Duration::from_secs_f64(5.0)).await;
             continue;
         }
 
-        let current_lane = &route[0];
-        if vehicle.is_accident {
-            continue;
-        }
-
-        let lane_has_accident =
-            if let Some(lane) = lanes.iter().find(|ln| ln.name == current_lane.name) {
-                lane.has_accident
-            } else {
-                false
-            };
-
+        let lane_has_accident = {
+            let lanes_guard = lanes.lock().unwrap();
+            lanes_guard
+                .iter()
+                .find(|l| l.name == current_lane.name)
+                .map(|l| l.has_accident)
+                .unwrap_or(false)
+        };
         if lane_has_accident {
-            if !vehicle.is_in_lane {
-                if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                    lane.add_vehicle(&vehicle);
-                }
-                println!(
-                    "Vehicle {:?} {} is waiting at lane: {} (lane has an accident)",
-                    vehicle.vehicle_type, vehicle.id, current_lane.name
-                );
-                vehicle.is_in_lane = true;
+            let accident_severity = if vehicle.is_accident {
+                vehicle.severity
+            } else {
+                2
+            };
+            let target_wait = accident_severity as f64 * 1.5;
+            if vehicle.waiting_start.is_none() {
+                vehicle.waiting_start = Some(current_timestamp());
             }
-            continue;
+            let waited = current_timestamp() - vehicle.waiting_start.unwrap();
+            if (waited as f64) < target_wait {
+                let remaining = target_wait - waited as f64;
+                println!(
+                    "Vehicle {:?} {} waiting at lane {} due to accident. Waiting {:.2} more seconds.",
+                    vehicle.vehicle_type, vehicle.id, current_lane.name, remaining
+                );
+                sleep(Duration::from_secs_f64(remaining)).await;
+                let total_waited = current_timestamp() - vehicle.waiting_start.unwrap();
+                vehicle.waiting_time += total_waited;
+                vehicle.waiting_start = None;
+            }
         }
 
-        let intersection_opt = intersections.iter().find(|i| i.id == current_lane.from);
-        let mut can_move = false;
-
+        let intersection_opt = {
+            let intersections_guard = intersections.lock().unwrap();
+            intersections_guard
+                .iter()
+                .find(|i| i.id == current_lane.from)
+                .cloned()
+        };
         if let Some(intersection) = intersection_opt {
             if intersection.control == IntersectionControl::TrafficLight {
-                if vehicle.is_emergency {
-                    traffic_controller.set_emergency_override(
-                        intersection.id,
-                        &current_lane.name,
-                        lanes,
-                    );
-                    can_move = true;
-                } else {
-                    can_move =
-                        traffic_controller.is_lane_green(intersection.id, &current_lane.name);
-                }
-            } else {
-                can_move = true;
-            }
-        } else {
-            can_move = true;
-        }
-
-        let mut my_rng = rand::rng();
-        if can_move && !vehicle.is_accident && my_rng.random_bool(0.01) {
-            if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                vehicle.is_accident = true;
-                vehicle.severity = my_rng.random_range(1..=5);
-                vehicle.accident_timestamp = Some(current_timestamp());
-                lane.has_accident = true;
-                println!(
-                    "An accident occurred. Vehicle {:?} {} crashed on: {} with severity {}",
-                    vehicle.vehicle_type, vehicle.id, lane.name, vehicle.severity
-                );
-                can_move = false;
-            }
-        }
-
-        if can_move && !vehicle.is_accident {
-            vehicle.current_lane = current_lane.name.clone();
-            if vehicle.is_in_lane {
-                if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                    lane.remove_vehicle(&vehicle);
-                    vehicle.is_in_lane = false;
-                }
-            }
-            let moving_lane = route.remove(0);
-            println!(
-                "Vehicle {:?} {} is moving on lane: {} (from {:?} to {:?})",
-                vehicle.vehicle_type,
-                vehicle.id,
-                moving_lane.name,
-                moving_lane.from,
-                moving_lane.to
-            );
-
-            if route.is_empty() {
-                println!(
-                    "Vehicle {:?} {} has reached its destination at intersection: {:?}",
-                    vehicle.vehicle_type, vehicle.id, vehicle.exit_point
-                );
-                finished_vehicle_ids.push(vehicle.id);
-            }
-        } else {
-            if !vehicle.is_in_lane {
-                if let Some(lane) = lanes.iter_mut().find(|ln| ln.name == current_lane.name) {
-                    lane.add_vehicle(&vehicle);
-                }
-                let reason = if vehicle.is_accident {
-                    "vehicle is in accident"
-                } else if lane_has_accident {
-                    "lane has an accident"
-                } else {
-                    "traffic light is red"
+                let can_move = {
+                    let tc = traffic_controller.lock().unwrap();
+                    tc.is_lane_green(intersection.id, &current_lane.name)
                 };
-                println!(
-                    "Vehicle {:?} {} is waiting at lane: {} ({})",
-                    vehicle.vehicle_type, vehicle.id, current_lane.name, reason
-                );
-                vehicle.is_in_lane = true;
+                if !can_move {
+                    if vehicle.is_emergency() {
+                        {
+                            let mut tc = traffic_controller.lock().unwrap();
+                            tc.set_emergency_override_route(
+                                intersection.id,
+                                vec![current_lane.name.clone()],
+                            );
+                        }
+                        println!(
+                            "Emergency vehicle {:?} {} triggered override at intersection {:?} on lane {}.",
+                            vehicle.vehicle_type, vehicle.id, intersection.id, current_lane.name
+                        );
+                    } else {
+                        if vehicle.waiting_start.is_none() {
+                            vehicle.waiting_start = Some(current_timestamp());
+                        }
+                        let remaining_phase = {
+                            let tc = traffic_controller.lock().unwrap();
+                            if let Some(ctrl) = tc.controllers.get(&intersection.id) {
+                                ctrl.phases[ctrl.current_phase_index]
+                                    .duration
+                                    .saturating_sub(ctrl.elapsed_in_phase)
+                            } else {
+                                1
+                            }
+                        };
+                        sleep(Duration::from_secs(remaining_phase)).await;
+                        continue;
+                    }
+                } else {
+                    if let Some(start) = vehicle.waiting_start {
+                        let waited = current_timestamp() - start;
+                        vehicle.waiting_time += waited;
+                        vehicle.waiting_start = None;
+                    }
+                }
             }
         }
-    }
 
-    vehicles.retain(|(v, _)| !finished_vehicle_ids.contains(&v.id));
+        if rng.random_bool(0.001) {
+            let crash_severity = rng.random_range(1..=3);
+            vehicle.severity = crash_severity;
+            let crash_wait = crash_severity as f64 * 1.5;
+            println!(
+                "Vehicle {:?} {} crashed on lane {} with severity {}. Waiting {:.2} seconds before removal.",
+                vehicle.vehicle_type, vehicle.id, current_lane.name, crash_severity, crash_wait
+            );
+            sleep(Duration::from_secs_f64(crash_wait)).await;
+            println!(
+                "Vehicle {:?} {} removed from simulation due to crash.",
+                vehicle.vehicle_type, vehicle.id
+            );
+            {
+                let mut lanes_guard = lanes.lock().unwrap();
+                if let Some(lane) = lanes_guard.iter_mut().find(|l| l.name == current_lane.name) {
+                    lane.remove_vehicle(&vehicle);
+                }
+            }
+            {
+                let mut active = active_ids.lock().unwrap();
+                active.remove(&vehicle.id);
+            }
+            {
+                let mut veh_ev = vehicle_events.lock().unwrap();
+                veh_ev.push(VehicleData {
+                    id: vehicle.id,
+                    waiting_time: vehicle.waiting_time,
+                    accident_timestamp: vehicle.accident_timestamp,
+                    severity: vehicle.severity,
+                    current_lane: vehicle.current_lane.clone(),
+                });
+            }
+            return;
+        }
+
+        let travel_time_secs = current_lane.length_meters / vehicle.speed;
+        println!(
+            "Vehicle {:?} {} traveling lane {} (from {:?} to {:?}) in {:.2} seconds.",
+            vehicle.vehicle_type,
+            vehicle.id,
+            current_lane.name,
+            current_lane.from,
+            current_lane.to,
+            travel_time_secs
+        );
+        sleep(Duration::from_secs_f64(travel_time_secs)).await;
+        vehicle.waiting_start = None;
+        {
+            let mut lanes_guard = lanes.lock().unwrap();
+            if let Some(lane) = lanes_guard.iter().position(|l| l.name == current_lane.name) {
+                lanes_guard.get_mut(lane).unwrap().remove_vehicle(&vehicle);
+            }
+        }
+        route.remove(0);
+    }
+    println!(
+        "Vehicle {:?} {} reached destination. Total waiting time: {} seconds.",
+        vehicle.vehicle_type, vehicle.id, vehicle.waiting_time
+    );
+    {
+        let mut veh_ev = vehicle_events.lock().unwrap();
+        veh_ev.push(VehicleData {
+            id: vehicle.id,
+            waiting_time: vehicle.waiting_time,
+            accident_timestamp: vehicle.accident_timestamp,
+            severity: vehicle.severity,
+            current_lane: vehicle.current_lane.clone(),
+        });
+    }
+    {
+        let mut active = active_ids.lock().unwrap();
+        active.remove(&vehicle.id);
+    }
 }
 
-pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>) {
-    let mut vehicles: Vec<(Vehicle, Vec<Lane>)> = Vec::new();
+/// Main simulation loop as an async function using Tokio.
+pub async fn run_simulation(
+    intersections: Arc<Mutex<Vec<Intersection>>>,
+    lanes: Arc<Mutex<Vec<Lane>>>,
+) {
+    // Initialize the traffic light controller.
+    let (iclones, lclones) = {
+        let intersections_guard = intersections.lock().unwrap();
+        let lanes_guard = lanes.lock().unwrap();
+        (intersections_guard.clone(), lanes_guard.clone())
+    };
+    let tc = TrafficLightController::initialize(iclones, &lclones);
+    let traffic_controller = Arc::new(Mutex::new(tc));
+
+    // Spawn the traffic light update loop as a concurrent task.
+    tokio::spawn(
+        crate::control_system::traffic_light_controller::TrafficLightController::run_update_loop(
+            Arc::clone(&traffic_controller),
+        ),
+    );
+
     let mut next_vehicle_id = 1;
-    let mut traffic_controller = TrafficLightController::initialize(intersections.clone(), &lanes);
-    let mut historical = HistoricalData::new(10);
+    let active_ids: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Shared vector to collect vehicle events.
+    let vehicle_events: Arc<Mutex<Vec<VehicleData>>> = Arc::new(Mutex::new(vec![]));
 
     let mut rabbit_connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")
         .expect("RabbitMQ connection");
-
     let publish_channel = rabbit_connection
         .open_channel(None)
         .expect("open publish channel");
     let exchange = Exchange::direct(&publish_channel);
-
     publish_channel
         .queue_declare(QUEUE_TRAFFIC_DATA, QueueDeclareOptions::default())
         .expect("declare traffic_data queue");
 
-    let consumer_channel = rabbit_connection
-        .open_channel(None)
-        .expect("open consumer channel");
-
-    consumer_channel
-        .queue_declare(QUEUE_LIGHT_ADJUSTMENTS, QueueDeclareOptions::default())
-        .expect("declare light_adjustments queue");
-
-    // Spawn a thread to listen for LightAdjustment messages
-    {
-        thread::spawn(move || {
-            let queue = consumer_channel
-                .queue_declare(QUEUE_LIGHT_ADJUSTMENTS, QueueDeclareOptions::default())
-                .expect("declare light_adjustments queue");
-            let consumer = queue
-                .consume(ConsumerOptions::default())
-                .expect("consume light_adjustments");
-            println!("Simulation: waiting for LightAdjustment messages...");
-
-            for message in consumer.receiver() {
-                match message {
-                    ConsumerMessage::Delivery(delivery) => {
-                        if let Ok(json_str) = std::str::from_utf8(&delivery.body) {
-                            println!(
-                                "[Simulation] Received LightAdjustment message: {}",
-                                json_str
-                            );
-                            // Here you'd parse the JSON if you want to apply adjustments in real-time
-                            // e.g., serde_json::from_str::<LightAdjustmentMsg>(json_str).unwrap();
-                        }
-                        consumer
-                            .ack(delivery)
-                            .expect("ack in light_adjustments consumer");
-                    }
-                    other => {
-                        println!("Consumer ended: {:?}", other);
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    // Simulation Loop
     loop {
-        // a) Spawn vehicles
-        for _ in 0..6 {
-            if let Some((vehicle, route)) =
-                spawn_vehicle(&intersections, &lanes, &mut next_vehicle_id)
-            {
-                let route_names: Vec<String> = route.iter().map(|lane| lane.name.clone()).collect();
+        // Take snapshots of lanes and intersections.
+        let (lanes_snapshot, intersections_snapshot) = {
+            let lanes_guard = lanes.lock().unwrap();
+            let intersections_guard = intersections.lock().unwrap();
+            (lanes_guard.clone(), intersections_guard.clone())
+        };
+        // Extract vehicle events and clear the shared vector.
+        let vehicle_data_snapshot = {
+            let mut veh_ev = vehicle_events.lock().unwrap();
+            let data = veh_ev.clone();
+            veh_ev.clear();
+            data
+        };
+        let current_traffic_data = collect_traffic_data(
+            &lanes_snapshot,
+            &intersections_snapshot,
+            vehicle_data_snapshot,
+        );
+
+        // Spawn a batch of vehicles concurrently.
+        for _ in 0..5 {
+            if let Some((vehicle, route)) = spawn_vehicle(
+                &intersections,
+                &lanes,
+                &current_traffic_data,
+                &mut next_vehicle_id,
+            ) {
+                {
+                    let mut active = active_ids.lock().unwrap();
+                    if active.contains(&vehicle.id) {
+                        continue;
+                    }
+                    active.insert(vehicle.id);
+                }
                 println!(
-                    "Spawned vehicle {:?} {} from {:?} to {:?} route: {:?}",
+                    "Spawned vehicle {:?} {} from {:?} to {:?}. Route: {:?}",
                     vehicle.vehicle_type,
                     vehicle.id,
                     vehicle.entry_point,
                     vehicle.exit_point,
-                    route_names
+                    route.iter().map(|l| l.name.clone()).collect::<Vec<_>>()
                 );
-                vehicles.push((vehicle, route));
+                let intersections_clone = Arc::clone(&intersections);
+                let lanes_clone = Arc::clone(&lanes);
+                let tc_clone = Arc::clone(&traffic_controller);
+                let active_ids_clone = Arc::clone(&active_ids);
+                let vehicle_events_clone = Arc::clone(&vehicle_events);
+                tokio::spawn(simulate_vehicle_journey(
+                    vehicle,
+                    route,
+                    intersections_clone,
+                    lanes_clone,
+                    tc_clone,
+                    active_ids_clone,
+                    vehicle_events_clone,
+                ));
             }
         }
 
-        // b) Update traffic lights
-        traffic_controller.update_all();
+        // (Manual update removed – traffic lights are updated concurrently by the dedicated update loop.)
 
-        // c) Move vehicles
-        simulate_vehicle_movement(
-            &mut vehicles,
-            &mut intersections,
-            &mut lanes,
-            &mut traffic_controller,
-        );
-
-        // d) Flow Analyzer logic
-        let active_vehicles: Vec<Vehicle> = vehicles.iter().map(|(v, _)| v.clone()).collect();
-        let traffic_data = collect_traffic_data(&lanes, &active_vehicles, &intersections);
-        let waiting_times: HashMap<String, f64> = intersections
-            .iter()
-            .map(|i| (format!("{:?}", i.id), i.avg_waiting_time()))
-            .collect();
-
-        historical.update_occupancy(&traffic_data);
-        historical.update_waiting_time(&waiting_times);
-
-        let alerts = analyze_traffic(&traffic_data);
-        if !alerts.is_empty() {
-            send_congestion_alerts(&alerts);
-        }
-
-        let adjustments = generate_signal_adjustments(&traffic_data);
-        for adj in adjustments {
-            println!(
-                "Recommend adjusting intersection {:?}: add {} seconds green.",
-                adj.intersection_id, adj.add_seconds_green
-            );
-        }
-
-        for (vehicle, route) in vehicles.iter_mut() {
-            if let Some(route_update) = generate_route_update(&traffic_data, route, &lanes, vehicle)
-            {
-                println!("Vehicle {} re-routed: {}", vehicle.id, route_update.reason);
-                *route = route_update.new_route;
-            }
-        }
-
-        // e) Send an update to the Traffic Light Controller (existing crossbeam)
         let update = TrafficUpdate {
-            current_data: traffic_data.clone(),
-            predicted_data: predict_future_traffic_weighted(&traffic_data, &historical, 0.8),
+            current_data: current_traffic_data,
             timestamp: current_timestamp(),
         };
-
-        // f) Publish traffic data to "traffic_data" queue every second.
         if let Ok(payload) = serde_json::to_vec(&update) {
             exchange
                 .publish(Publish::new(&payload, QUEUE_TRAFFIC_DATA))
@@ -376,8 +444,6 @@ pub fn run_simulation(mut intersections: Vec<Intersection>, mut lanes: Vec<Lane>
         } else {
             println!("ERROR serializing update");
         }
-
-        // g) Sleep
-        thread::sleep(Duration::from_millis(1000));
+        sleep(Duration::from_millis(1000)).await;
     }
 }
