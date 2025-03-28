@@ -38,10 +38,10 @@ impl Vehicle {
         speed: f64,
     ) -> Self {
         let length = match vehicle_type {
-            VehicleType::Car => 4.5,
-            VehicleType::Bus => 12.0,
-            VehicleType::Truck => 16.0,
-            VehicleType::EmergencyVan => 5.5,
+            VehicleType::Car => 2.0,
+            VehicleType::Bus => 6.0,
+            VehicleType::Truck => 4.0,
+            VehicleType::EmergencyVan => 3.0,
         };
 
         Self {

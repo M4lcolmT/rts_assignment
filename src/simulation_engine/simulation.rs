@@ -97,9 +97,9 @@ fn spawn_vehicle(
     }
 
     let rand_val: f64 = rng.random_range(0.0..1.0);
-    let vehicle_type = if rand_val < 0.50 {
+    let vehicle_type = if rand_val < 0.70 {
         VehicleType::Car
-    } else if rand_val < 0.81 {
+    } else if rand_val < 0.90 {
         VehicleType::Truck
     } else if rand_val < 0.99 {
         VehicleType::Bus
@@ -108,10 +108,10 @@ fn spawn_vehicle(
     };
 
     let speed = match vehicle_type {
-        VehicleType::Car => rng.random_range(40.0..100.0),
-        VehicleType::Bus => rng.random_range(40.0..80.0),
-        VehicleType::Truck => rng.random_range(40.0..70.0),
-        VehicleType::EmergencyVan => rng.random_range(60.0..120.0),
+        VehicleType::Car => rng.random_range(800.0..1400.0),
+        VehicleType::Bus => rng.random_range(600.0..800.0),
+        VehicleType::Truck => rng.random_range(600.0..800.0),
+        VehicleType::EmergencyVan => rng.random_range(1200.0..1800.0),
     };
 
     let vehicle = Vehicle::new(*next_vehicle_id, vehicle_type, entry.id, exit.id, speed);

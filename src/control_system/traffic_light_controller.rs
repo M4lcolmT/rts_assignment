@@ -98,11 +98,11 @@ impl IntersectionController {
             for lane in &phase.green_lanes {
                 if let Some(&congestion) = predicted_data.get(lane) {
                     if congestion > 0.8 {
-                        extra_seconds = extra_seconds.max(5); // add extra 5 seconds if congestion is high
+                        extra_seconds = extra_seconds.max(1); // add extra 1 seconds if congestion is high
                     }
                 }
             }
-            let new_duration = 5 + extra_seconds; // base duration is 5 seconds
+            let new_duration = 1 + extra_seconds; // base duration is 1 seconds
             if phase.duration != new_duration {
                 println!(
                     "Adjusting phase duration for lanes {:?} from {} to {} seconds based on predicted traffic",
@@ -184,11 +184,11 @@ impl TrafficLightController {
                     // Two phases: one for horizontal lanes and one for vertical lanes.
                     phases.push(TrafficLightPhase {
                         green_lanes: horizontal.clone(),
-                        duration: 5,
+                        duration: 1,
                     });
                     phases.push(TrafficLightPhase {
                         green_lanes: vertical.clone(),
-                        duration: 5,
+                        duration: 1,
                     });
                 } else {
                     // Single phase with all connected lanes.
@@ -198,7 +198,7 @@ impl TrafficLightController {
                         .collect();
                     phases.push(TrafficLightPhase {
                         green_lanes: all,
-                        duration: 5,
+                        duration: 1,
                     });
                 }
 
