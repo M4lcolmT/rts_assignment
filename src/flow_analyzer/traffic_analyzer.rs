@@ -172,7 +172,6 @@ pub async fn start_analyzer_rabbitmq() -> AmiquipResult<()> {
                 ConsumerMessage::Delivery(delivery) => {
                     if let Ok(json_str) = std::str::from_utf8(&delivery.body) {
                         if let Ok(update) = serde_json::from_str::<TrafficUpdate>(json_str) {
-                            // println!("intersection_congestion: {:?}", &update.current_data.intersection_congestion);
                             let alerts = analyze_traffic(&update.current_data);
                             if !alerts.is_empty() {
                                 for alert in &alerts {
@@ -219,10 +218,11 @@ pub async fn start_analyzer_rabbitmq() -> AmiquipResult<()> {
                                     event_json.as_bytes(),
                                     "traffic_events",
                                 ))?;
-                                // println!(
-                                //     "[Analyzer] Published TrafficEvent to 'traffic_events': {:?}",
-                                //     traffic_event
-                                // );
+                                println!(
+                                    "[Analyzer] Published TrafficEvent to 'traffic_events': {:?}",
+                                    traffic_event
+                                );
+                                // TODO: display message every 5 seconds? 
                             }
                         }
                     }

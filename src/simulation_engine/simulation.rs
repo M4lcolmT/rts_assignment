@@ -108,10 +108,10 @@ fn spawn_vehicle(
     };
 
     let speed = match vehicle_type {
-        VehicleType::Car => rng.random_range(800.0..1400.0),
-        VehicleType::Bus => rng.random_range(600.0..800.0),
-        VehicleType::Truck => rng.random_range(600.0..800.0),
-        VehicleType::EmergencyVan => rng.random_range(1200.0..1800.0),
+        VehicleType::Car => rng.random_range(80.0..140.0),
+        VehicleType::Bus => rng.random_range(70.0..100.0),
+        VehicleType::Truck => rng.random_range(60.0..90.0),
+        VehicleType::EmergencyVan => rng.random_range(120.0..180.0),
     };
 
     let vehicle = Vehicle::new(*next_vehicle_id, vehicle_type, entry.id, exit.id, speed);
@@ -335,7 +335,6 @@ async fn simulate_vehicle_journey(
     }
 }
 
-/// Main simulation loop as an async function using Tokio.
 pub async fn run_simulation(
     intersections: Arc<Mutex<Vec<Intersection>>>,
     lanes: Arc<Mutex<Vec<Lane>>>,
@@ -358,7 +357,6 @@ pub async fn run_simulation(
 
     let mut next_vehicle_id = 1;
     let active_ids: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
-    // Shared vector to collect vehicle events.
     let vehicle_events: Arc<Mutex<Vec<VehicleData>>> = Arc::new(Mutex::new(vec![]));
 
     let mut rabbit_connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")
@@ -430,8 +428,6 @@ pub async fn run_simulation(
                 ));
             }
         }
-
-        // (Manual update removed – traffic lights are updated concurrently by the dedicated update loop.)
 
         let update = TrafficUpdate {
             current_data: current_traffic_data,

@@ -29,7 +29,7 @@ pub struct TrafficDataRecord {
     pub raw_data: String,
 }
 
-/// Generic helper to log a record to a CSV file.
+// Generic helper to log a record to a CSV file.
 fn log_to_csv<T: Serialize>(filename: &str, record: &T) -> Result<(), Box<dyn Error>> {
     let file_exists = Path::new(filename).exists();
     let file = OpenOptions::new()
@@ -62,7 +62,7 @@ pub fn log_traffic_data(record: TrafficDataRecord) {
     }
 }
 
-/// Listens to the "congestion_alerts" queue and logs each incoming record.
+// Listens to the "congestion_alerts" queue and logs each incoming record.
 pub async fn listen_congestion_alerts() -> AmiquipResult<()> {
     tokio::task::spawn_blocking(|| -> AmiquipResult<()> {
         let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
@@ -100,7 +100,7 @@ pub async fn listen_congestion_alerts() -> AmiquipResult<()> {
     .unwrap()
 }
 
-/// Listens to the "light_adjustments" queue and logs each incoming record.
+// Listens to the "light_adjustments" queue and logs each incoming record.
 pub async fn listen_light_adjustments() -> AmiquipResult<()> {
     tokio::task::spawn_blocking(|| -> AmiquipResult<()> {
         let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
@@ -137,7 +137,7 @@ pub async fn listen_light_adjustments() -> AmiquipResult<()> {
     .unwrap()
 }
 
-/// Listens to the "traffic_data" queue and logs each incoming record.
+// Listens to the "traffic_data" queue and logs each incoming record.
 pub async fn listen_traffic_data() -> AmiquipResult<()> {
     tokio::task::spawn_blocking(|| -> AmiquipResult<()> {
         let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
@@ -171,7 +171,7 @@ pub async fn listen_traffic_data() -> AmiquipResult<()> {
     .unwrap()
 }
 
-/// Reads and displays records from "congestion_alerts.csv".
+// Reads and displays records from "congestion_alerts.csv".
 pub fn show_congestion_alerts() -> Result<(), Box<dyn Error>> {
     let file = File::open("congestion_alerts.csv")?;
     let mut rdr = csv::Reader::from_reader(file);
@@ -183,7 +183,7 @@ pub fn show_congestion_alerts() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Reads and displays records from "light_adjustments.csv".
+// Reads and displays records from "light_adjustments.csv".
 pub fn show_light_adjustments() -> Result<(), Box<dyn Error>> {
     let file = File::open("light_adjustments.csv")?;
     let mut rdr = csv::Reader::from_reader(file);
@@ -195,7 +195,7 @@ pub fn show_light_adjustments() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Reads and displays records from "traffic_data.csv".
+// Reads and displays records from "traffic_data.csv".
 pub fn show_traffic_data() -> Result<(), Box<dyn Error>> {
     let file = File::open("traffic_data.csv")?;
     let mut rdr = csv::Reader::from_reader(file);
@@ -207,7 +207,7 @@ pub fn show_traffic_data() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Publishes a manual traffic light phase adjustment to the "light_adjustments" queue.
+// Publishes a manual traffic light phase adjustment to the "light_adjustments" queue.
 pub fn adjust_traffic_light_phase(intersection_id: String, new_duration: u32) -> AmiquipResult<()> {
     let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
     let channel = connection.open_channel(None)?;
@@ -222,7 +222,7 @@ pub fn adjust_traffic_light_phase(intersection_id: String, new_duration: u32) ->
     connection.close()
 }
 
-/// Generates a simple report by counting the number of records in each CSV file.
+// Generates a simple report by counting the number of records in each CSV file.
 pub fn generate_report() -> Result<(), Box<dyn Error>> {
     println!("Generating Report...");
     let congestion_count = count_csv_records("congestion_alerts.csv")?;
@@ -242,7 +242,7 @@ fn count_csv_records(filename: &str) -> Result<usize, Box<dyn Error>> {
     Ok(count)
 }
 
-/// Provides a simple CLI for admin operations.
+// Provides a simple CLI for admin operations.
 pub async fn run_cli() {
     use std::io::{stdin, stdout, Write};
     loop {

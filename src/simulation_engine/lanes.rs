@@ -1,5 +1,6 @@
 use crate::simulation_engine::intersections::IntersectionId;
 use crate::simulation_engine::vehicles::Vehicle;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
 pub struct Lane {
@@ -12,6 +13,8 @@ pub struct Lane {
     pub has_emergency_vehicle: bool,
     pub has_accident: bool,
     pub waiting_time: f64,
+    /// FIFO queue to store vehicles on the lane.
+    pub vehicle_queue: VecDeque<Vehicle>,
 }
 
 impl Lane {
@@ -25,23 +28,29 @@ impl Lane {
             has_emergency_vehicle: false,
             has_accident: false,
             waiting_time: 0.0,
+            vehicle_queue: VecDeque::new(),
         }
     }
 
     /// Check if there is space for a new vehicle.
+    /// Note: If an emergency vehicle is already present the lane is blocked.
     pub fn can_add_vehicle(&self, vehicle: &Vehicle) -> bool {
-        // If an emergency vehicle is present, it blocks or overrides usage.
-        self.has_emergency_vehicle
-            || (self.current_vehicle_length + vehicle.length <= self.length_meters)
+        if self.has_emergency_vehicle {
+            return false;
+        }
+        self.current_vehicle_length + vehicle.length <= self.length_meters
     }
 
     /// Attempt to add a vehicle onto this lane.
+    /// The vehicle is pushed to the back of the FIFO queue.
     pub fn add_vehicle(&mut self, vehicle: &Vehicle) -> bool {
         if vehicle.is_emergency() {
             self.has_emergency_vehicle = true;
+            self.vehicle_queue.push_back(vehicle.clone());
             true
         } else if self.can_add_vehicle(vehicle) {
             self.current_vehicle_length += vehicle.length;
+            self.vehicle_queue.push_back(vehicle.clone());
             true
         } else {
             false
@@ -49,12 +58,17 @@ impl Lane {
     }
 
     /// Remove a vehicle from this lane.
+    /// In FIFO operation the vehicle at the front is normally removed.
     pub fn remove_vehicle(&mut self, vehicle: &Vehicle) {
-        if self.current_vehicle_length >= vehicle.length {
-            self.current_vehicle_length -= vehicle.length;
-        }
-        if vehicle.is_emergency() {
-            self.has_emergency_vehicle = false;
+        if let Some(pos) = self.vehicle_queue.iter().position(|v| v.id == vehicle.id) {
+            self.vehicle_queue.remove(pos);
+            if !vehicle.is_emergency() {
+                if self.current_vehicle_length >= vehicle.length {
+                    self.current_vehicle_length -= vehicle.length;
+                }
+            } else {
+                self.has_emergency_vehicle = false;
+            }
         }
     }
 }
