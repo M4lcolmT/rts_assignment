@@ -34,8 +34,8 @@ impl PartialEq for State {
 
 impl Eq for State {}
 
-/// Use Dijkstra's algorithm to find the shortest route of Lanes from `entry` to `exit`.
-/// Returns None if no path exists.
+// Use Dijkstra's algorithm to find the shortest route of Lanes from `entry` to `exit`.
+// Returns None if no path exists.
 pub fn generate_shortest_lane_route(
     lanes: &[Lane],
     entry: IntersectionId,

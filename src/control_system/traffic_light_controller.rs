@@ -1,11 +1,11 @@
-use crate::flow_analyzer::traffic_analyzer::CongestionAlert;
+use crate::global_variables::{AMQP_URL, QUEUE_CONGESTION_ALERTS, QUEUE_LIGHT_ADJUSTMENTS};
+use crate::shared_data::{current_timestamp, CongestionAlert, LightAdjustment};
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
 use crate::simulation_engine::lanes::Lane;
 use amiquip::{
     Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
     Result as AmiquipResult,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::task;
@@ -290,41 +290,37 @@ impl TrafficLightController {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LightAdjustment {
-    pub intersection_id: String,
-    pub add_seconds_green: u32,
-}
-
 pub async fn start_traffic_controller_rabbitmq() -> AmiquipResult<()> {
     task::spawn_blocking(|| -> AmiquipResult<()> {
-        let mut connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")?;
+        let mut connection = Connection::insecure_open(AMQP_URL)?;
         let channel = connection.open_channel(None)?;
         let exchange = Exchange::direct(&channel);
         let congestion_alert_queue =
-            channel.queue_declare("congestion_alerts", QueueDeclareOptions::default())?;
+            channel.queue_declare(QUEUE_CONGESTION_ALERTS, QueueDeclareOptions::default())?;
         let consumer = congestion_alert_queue.consume(ConsumerOptions::default())?;
         println!("[TrafficController] Waiting for congestion alerts on 'congestion_alerts'...");
 
-        channel.queue_declare("light_adjustments", QueueDeclareOptions::default())?;
+        channel.queue_declare(QUEUE_LIGHT_ADJUSTMENTS, QueueDeclareOptions::default())?;
 
         for message in consumer.receiver() {
             println!("Received message in TrafficController");
             match message {
                 ConsumerMessage::Delivery(delivery) => {
+                    let ts = current_timestamp();
                     if let Ok(json_str) = std::str::from_utf8(&delivery.body) {
                         if let Ok(alert) = serde_json::from_str::<CongestionAlert>(json_str) {
                             println!("[TrafficController] Got CongestionAlert: {:?}", alert);
                             if let Some(int_id) = alert.intersection {
                                 // TODO: Temporarily, for demonstration, publish a fixed additional duration adjustment.
                                 let adjustment = LightAdjustment {
+                                    timestamp: ts,
                                     intersection_id: int_id.to_string(),
                                     add_seconds_green: 5,
                                 };
                                 if let Ok(adj_json) = serde_json::to_string(&adjustment) {
                                     exchange.publish(Publish::new(
                                         adj_json.as_bytes(),
-                                        "light_adjustments",
+                                        QUEUE_LIGHT_ADJUSTMENTS,
                                     ))?;
                                     println!(
                                         "[TrafficController] Published LightAdjustment: {:?}",

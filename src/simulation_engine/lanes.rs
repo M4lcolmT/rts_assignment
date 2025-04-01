@@ -8,12 +8,11 @@ pub struct Lane {
     pub from: IntersectionId,
     pub to: IntersectionId,
     pub length_meters: f64,
-    /// Current occupied vehicle length in meters (to model capacity).
     pub current_vehicle_length: f64,
     pub has_emergency_vehicle: bool,
     pub has_accident: bool,
     pub waiting_time: f64,
-    /// FIFO queue to store vehicles on the lane.
+    // FIFO queue to store vehicles on the lane.
     pub vehicle_queue: VecDeque<Vehicle>,
 }
 
@@ -32,8 +31,8 @@ impl Lane {
         }
     }
 
-    /// Check if there is space for a new vehicle.
-    /// Note: If an emergency vehicle is already present the lane is blocked.
+    // Check if there is space for a new vehicle.
+    // Note: If an emergency vehicle is already present the lane is blocked.
     pub fn can_add_vehicle(&self, vehicle: &Vehicle) -> bool {
         if self.has_emergency_vehicle {
             return false;
@@ -41,8 +40,8 @@ impl Lane {
         self.current_vehicle_length + vehicle.length <= self.length_meters
     }
 
-    /// Attempt to add a vehicle onto this lane.
-    /// The vehicle is pushed to the back of the FIFO queue.
+    // Attempt to add a vehicle onto this lane.
+    // The vehicle is pushed to the back of the FIFO queue.
     pub fn add_vehicle(&mut self, vehicle: &Vehicle) -> bool {
         if vehicle.is_emergency() {
             self.has_emergency_vehicle = true;
@@ -57,8 +56,8 @@ impl Lane {
         }
     }
 
-    /// Remove a vehicle from this lane.
-    /// In FIFO operation the vehicle at the front is normally removed.
+    // Remove a vehicle from this lane.
+    // In FIFO operation the vehicle at the front is normally removed.
     pub fn remove_vehicle(&mut self, vehicle: &Vehicle) {
         if let Some(pos) = self.vehicle_queue.iter().position(|v| v.id == vehicle.id) {
             self.vehicle_queue.remove(pos);

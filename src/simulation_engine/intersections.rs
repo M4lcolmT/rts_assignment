@@ -1,7 +1,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct IntersectionId(pub i8, pub i8);
 
-/// Represents control at an intersection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntersectionControl {
     Normal,       // Standard intersection without traffic lights
@@ -11,17 +10,14 @@ pub enum IntersectionControl {
 pub struct Intersection {
     pub id: IntersectionId,
     pub name: String,
-    /// Whether vehicles can enter at this intersection.
     pub is_entry: bool,
-    /// Whether vehicles can exit at this intersection.
     pub is_exit: bool,
-    /// Defines if the intersection has a traffic light or is a normal junction.
+    // Defines if the intersection has a traffic light or is a normal junction.
     pub control: IntersectionControl,
     waiting_time: f64,
 }
 
 impl Intersection {
-    /// Creates a new intersection with the given properties.
     pub fn new(
         name: String,
         row: i8,
@@ -40,7 +36,6 @@ impl Intersection {
         }
     }
 
-    /// Returns the current average waiting time at this intersection.
     pub fn avg_waiting_time(&self) -> f64 {
         self.waiting_time
     }

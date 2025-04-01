@@ -1,5 +1,6 @@
 // simulation.rs
 use crate::control_system::traffic_light_controller::TrafficLightController;
+use crate::global_variables::{AMQP_URL, QUEUE_TRAFFIC_DATA};
 use crate::shared_data::current_timestamp;
 use crate::shared_data::{TrafficData, TrafficUpdate, VehicleData};
 use crate::simulation_engine::intersections::{Intersection, IntersectionControl};
@@ -15,9 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
 
-const QUEUE_TRAFFIC_DATA: &str = "traffic_data";
-
-/// Collect current traffic data from lanes and intersections, including vehicle data.
+// Collect current traffic data from lanes and intersections, including vehicle data.
 pub fn collect_traffic_data(
     lanes: &[Lane],
     intersections: &[Intersection],
@@ -72,8 +71,50 @@ pub fn collect_traffic_data(
     }
 }
 
-/// Spawns a new vehicle and computes its route based on predicted traffic data.
-fn spawn_vehicle(
+// Helper function to simulate rush hour by adjusting the number of vehicles spawned per iteration.
+// The spawn count increases linearly from 2 to 5 during the first 20 seconds of a 40-second cycle,
+// then decreases from 5 to 2 over the next 20 seconds, and repeats.
+fn simulate_rush_hour(simulation_start: u64, current_time: u64) -> usize {
+    let elapsed = current_time - simulation_start; // elapsed time in seconds
+    let cycle_duration = 40; // full cycle length in seconds
+    let cycle_time = elapsed % cycle_duration;
+    let spawn_count = if cycle_time <= 20 {
+        // Increasing phase: 2 to 5 vehicles.
+        let ratio = cycle_time as f64 / 20.0;
+        2.0 + ratio * 3.0 // 2 + (0 to 3) = 2 to 5
+    } else {
+        // Decreasing phase: 5 to 2 vehicles.
+        let ratio = (cycle_time - 20) as f64 / 20.0;
+        5.0 - ratio * 3.0 // 5 - (0 to 3) = 5 to 2
+    };
+    spawn_count.round() as usize
+}
+
+// Helper function to check if a vehicle is overspeeding.
+// For each vehicle type, we consider the vehicle to be overspeeding if its speed is in the upper 10% of its spawn range.
+fn verify_speed_limit(vehicle: &Vehicle) -> bool {
+    match vehicle.vehicle_type {
+        VehicleType::Car => {
+            // Car speed range: 80.0 - 140.0; threshold = 80 + 0.90*(60) = 134.0
+            vehicle.speed >= 134.0
+        }
+        VehicleType::Bus => {
+            // Bus speed range: 70.0 - 100.0; threshold = 70 + 0.90*(30) = 97.0
+            vehicle.speed >= 97.0
+        }
+        VehicleType::Truck => {
+            // Truck speed range: 60.0 - 90.0; threshold = 60 + 0.90*(30) = 87.0
+            vehicle.speed >= 87.0
+        }
+        VehicleType::EmergencyVan => {
+            // EmergencyVan speed range: 120.0 - 180.0; threshold = 120 + 0.90*(60) = 174.0
+            vehicle.speed >= 174.0
+        }
+    }
+}
+
+// Spawns a new vehicle and computes its route based on predicted traffic data.
+pub fn spawn_vehicle(
     intersections: &Arc<Mutex<Vec<Intersection>>>,
     lanes: &Arc<Mutex<Vec<Lane>>>,
     current_traffic_data: &TrafficData,
@@ -141,9 +182,9 @@ fn spawn_vehicle(
     Some((vehicle, route))
 }
 
-/// Simulates a vehicle’s journey as an independent async task.
-/// The vehicle pushes its event data into the shared vehicle_events vector when it reaches its destination or crashes.
-async fn simulate_vehicle_journey(
+// Simulates a vehicle’s journey as an independent async task.
+// The vehicle pushes its event data into the shared vehicle_events vector when it reaches its destination or crashes.
+pub async fn simulate_vehicle_journey(
     mut vehicle: Vehicle,
     mut route: Vec<Lane>,
     intersections: Arc<Mutex<Vec<Intersection>>>,
@@ -259,13 +300,20 @@ async fn simulate_vehicle_journey(
             }
         }
 
-        if rng.random_bool(0.001) {
+        let accident_probability = if verify_speed_limit(&vehicle) {
+            0.15
+        } else {
+            0.10
+        };
+        if rng.random_bool(accident_probability) {
+            let crashed_timestamp = current_timestamp();
+            vehicle.accident_timestamp = Some(crashed_timestamp);
             let crash_severity = rng.random_range(1..=3);
             vehicle.severity = crash_severity;
             let crash_wait = crash_severity as f64 * 1.5;
             println!(
-                "Vehicle {:?} {} crashed on lane {} with severity {}. Waiting {:.2} seconds before removal.",
-                vehicle.vehicle_type, vehicle.id, current_lane.name, crash_severity, crash_wait
+                "Vehicle {:?} {} crashed on lane {} with severity {} at {:?}. Waiting {:.2} seconds before removal.",
+                vehicle.vehicle_type, vehicle.id, current_lane.name, crash_severity, vehicle.accident_timestamp, crash_wait
             );
             sleep(Duration::from_secs_f64(crash_wait)).await;
             println!(
@@ -289,7 +337,7 @@ async fn simulate_vehicle_journey(
                     waiting_time: vehicle.waiting_time,
                     accident_timestamp: vehicle.accident_timestamp,
                     severity: vehicle.severity,
-                    current_lane: vehicle.current_lane.clone(),
+                    current_lane: current_lane.name.to_string(),
                 });
             }
             return;
@@ -326,7 +374,7 @@ async fn simulate_vehicle_journey(
             waiting_time: vehicle.waiting_time,
             accident_timestamp: vehicle.accident_timestamp,
             severity: vehicle.severity,
-            current_lane: vehicle.current_lane.clone(),
+            current_lane: "".to_string(),
         });
     }
     {
@@ -339,6 +387,9 @@ pub async fn run_simulation(
     intersections: Arc<Mutex<Vec<Intersection>>>,
     lanes: Arc<Mutex<Vec<Lane>>>,
 ) {
+    // Record simulation start time.
+    let simulation_start = current_timestamp();
+
     // Initialize the traffic light controller.
     let (iclones, lclones) = {
         let intersections_guard = intersections.lock().unwrap();
@@ -349,18 +400,15 @@ pub async fn run_simulation(
     let traffic_controller = Arc::new(Mutex::new(tc));
 
     // Spawn the traffic light update loop as a concurrent task.
-    tokio::spawn(
-        crate::control_system::traffic_light_controller::TrafficLightController::run_update_loop(
-            Arc::clone(&traffic_controller),
-        ),
-    );
+    tokio::spawn(TrafficLightController::run_update_loop(Arc::clone(
+        &traffic_controller,
+    )));
 
     let mut next_vehicle_id = 1;
     let active_ids: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let vehicle_events: Arc<Mutex<Vec<VehicleData>>> = Arc::new(Mutex::new(vec![]));
 
-    let mut rabbit_connection = Connection::insecure_open("amqp://guest:guest@localhost:5672")
-        .expect("RabbitMQ connection");
+    let mut rabbit_connection = Connection::insecure_open(AMQP_URL).expect("RabbitMQ connection");
     let publish_channel = rabbit_connection
         .open_channel(None)
         .expect("open publish channel");
@@ -370,6 +418,15 @@ pub async fn run_simulation(
         .expect("declare traffic_data queue");
 
     loop {
+        // Calculate dynamic spawn count based on rush hour simulation.
+        let current_time = current_timestamp();
+        let spawn_count = simulate_rush_hour(simulation_start, current_time);
+        println!(
+            "Elapsed time: {} sec - Spawning {} vehicle(s) this iteration.",
+            current_time - simulation_start,
+            spawn_count
+        );
+
         // Take snapshots of lanes and intersections.
         let (lanes_snapshot, intersections_snapshot) = {
             let lanes_guard = lanes.lock().unwrap();
@@ -390,7 +447,7 @@ pub async fn run_simulation(
         );
 
         // Spawn a batch of vehicles concurrently.
-        for _ in 0..5 {
+        for _ in 0..spawn_count {
             if let Some((vehicle, route)) = spawn_vehicle(
                 &intersections,
                 &lanes,

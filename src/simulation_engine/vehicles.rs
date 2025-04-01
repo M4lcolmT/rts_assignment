@@ -20,16 +20,12 @@ pub struct Vehicle {
     pub is_in_lane: bool,
     pub is_accident: bool,
     pub severity: i8,
-    pub current_lane: String,
     pub accident_timestamp: Option<u64>,
-    // Accumulated waiting time (in seconds)
     pub waiting_time: u64,
-    // When the vehicle started waiting (None if not waiting)
     pub waiting_start: Option<u64>,
 }
 
 impl Vehicle {
-    /// Creates a new vehicle with predefined length based on type.
     pub fn new(
         id: u64,
         vehicle_type: VehicleType,
@@ -55,14 +51,13 @@ impl Vehicle {
             is_in_lane: false,
             is_accident: false,
             severity: 0,
-            current_lane: "".to_string(),
             accident_timestamp: None,
             waiting_time: 0,
             waiting_start: None,
         }
     }
 
-    /// Returns true if the vehicle is an emergency vehicle.
+    // Returns true if the vehicle is an emergency vehicle.
     pub fn is_emergency(&self) -> bool {
         self.vehicle_type == VehicleType::EmergencyVan
     }

@@ -1,5 +1,6 @@
 use rts_assignment::monitoring::traffic_monitoring_system::{
-    listen_congestion_alerts, listen_light_adjustments, listen_traffic_data, run_cli,
+    listen_congestion_alerts, listen_light_adjustments, listen_traffic_data, listen_traffic_event,
+    run_cli,
 };
 use tokio::join;
 
@@ -21,6 +22,11 @@ async fn main() {
             eprintln!("Error in traffic data listener: {}", e);
         }
     });
+    let traffic_event_listener = tokio::spawn(async {
+        if let Err(e) = listen_traffic_event().await {
+            eprintln!("Error in traffic event listener: {}", e);
+        }
+    });
 
     // Run the admin CLI concurrently.
     let cli_handle = tokio::spawn(async {
@@ -32,6 +38,7 @@ async fn main() {
         congestion_listener,
         light_adjustments_listener,
         traffic_data_listener,
+        traffic_event_listener,
         cli_handle
     );
 }
