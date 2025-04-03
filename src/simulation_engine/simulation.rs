@@ -490,12 +490,15 @@ pub async fn run_simulation(
             current_data: current_traffic_data,
             timestamp: current_timestamp(),
         };
-        if let Ok(payload) = serde_json::to_vec(&update) {
-            exchange
-                .publish(Publish::new(&payload, QUEUE_TRAFFIC_DATA))
-                .expect("publish traffic_data");
-        } else {
-            println!("ERROR serializing update");
+        match serde_json::to_vec(&update) {
+            Ok(payload) => {
+                if let Err(err) = exchange.publish(Publish::new(&payload, QUEUE_TRAFFIC_DATA)) {
+                    println!("Error publishing traffic_data: {}", err);
+                }
+            }
+            Err(err) => {
+                println!("Error serializing update: {}", err);
+            }
         }
         sleep(Duration::from_millis(1000)).await;
     }

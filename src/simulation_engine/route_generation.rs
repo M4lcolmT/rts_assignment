@@ -12,7 +12,7 @@ struct State {
 // Reverse ordering to use BinaryHeap as a min-heap.
 impl Ord for State {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Notice the flip here: lower cost gets higher priority.
+        // Lower cost gets higher priority.
         other
             .cost
             .partial_cmp(&self.cost)
@@ -55,7 +55,6 @@ pub fn generate_shortest_lane_route(
     let mut dist: HashMap<IntersectionId, f64> = HashMap::new();
     // For backtracking: store which Lane got us to a given intersection
     let mut prev: HashMap<IntersectionId, &Lane> = HashMap::new();
-
     // Min-heap for Dijkstra
     let mut heap = BinaryHeap::new();
 
@@ -65,21 +64,18 @@ pub fn generate_shortest_lane_route(
         cost: 0.0,
         intersection: entry,
     });
-
     // Dijkstra's main loop
     while let Some(State { cost, intersection }) = heap.pop() {
         // If we've reached the exit, we can stop
         if intersection == exit {
             break;
         }
-
         // If there's already a better path to `intersection`, skip
         if let Some(&best_so_far) = dist.get(&intersection) {
             if cost > best_so_far {
                 continue;
             }
         }
-
         // Explore outgoing lanes from this intersection
         if let Some(neighbors) = graph.get(&intersection) {
             for &lane in neighbors {
@@ -97,13 +93,11 @@ pub fn generate_shortest_lane_route(
             }
         }
     }
-
     // If the exit has no recorded distance, we never reached it
     if !dist.contains_key(&exit) {
         println!("No route found from {:?} to {:?}", entry, exit);
         return None;
     }
-
     // Reconstruct the path from exit back to entry
     let mut route: Vec<Lane> = Vec::new();
     let mut current = exit;
