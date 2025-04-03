@@ -1,3 +1,3 @@
 fn main() {
-    println!("Use one of the named binaries: simulation, traffic_analyzer, or traffic_controller.");
+    println!("Run the 4 binaries: simulation, traffic_analyzer, traffic_controller, and traffic_monitoring_system.");
 }

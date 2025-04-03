@@ -41,7 +41,7 @@ fn bench_spawn_vehicle_batches(c: &mut Criterion) {
     drop(lanes_guard);
     drop(intersections_guard);
 
-    let batch_sizes = [10, 20, 50];
+    let batch_sizes = [50, 100, 200];
 
     let mut group = c.benchmark_group("spawn_vehicle_batch");
 

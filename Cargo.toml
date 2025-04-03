@@ -24,6 +24,10 @@ harness = false
 name = "bench_simulate_vehicle_journey"
 harness = false
 
+[[bench]]
+name = "bench_monitoring_system"
+harness = false
+
 [[bin]]
 name = "simulation_main"
 path = "src/bin/simulation_main.rs"
