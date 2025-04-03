@@ -21,7 +21,15 @@ name = "bench_spawn_vehicle"
 harness = false
 
 [[bench]]
+name = "bench_update"
+harness = false
+
+[[bench]]
 name = "bench_simulate_vehicle_journey"
+harness = false
+
+[[bench]]
+name = "bench_is_lane_green"
 harness = false
 
 [[bin]]

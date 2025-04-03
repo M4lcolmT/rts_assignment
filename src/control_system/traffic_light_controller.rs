@@ -89,7 +89,7 @@ impl IntersectionController {
     }
 
     // Adjust phase durations based on predicted congestion values.
-    // CURRENTLY NOT IN USE
+
     pub fn adjust_phase_durations_based_on_prediction(
         &mut self,
         predicted_data: &HashMap<String, f64>,
