@@ -1,4 +1,4 @@
-use rts_assignment::control_system::traffic_light_controller::start_traffic_controller_rabbitmq;
+use rts_assignment::c3_tp063987::traffic_light_controller::start_traffic_controller_rabbitmq;
 
 #[tokio::main]
 async fn main() {

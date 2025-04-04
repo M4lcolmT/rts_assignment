@@ -1,4 +1,4 @@
-use rts_assignment::flow_analyzer::traffic_analyzer::start_analyzer_rabbitmq;
+use rts_assignment::c2_tp063881::traffic_analyzer::start_analyzer_rabbitmq;
 
 #[tokio::main]
 async fn main() {

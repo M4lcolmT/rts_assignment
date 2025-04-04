@@ -1,4 +1,4 @@
-use crate::simulation_engine::intersections::IntersectionId;
+use crate::c1_tp063879::intersections::IntersectionId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VehicleType {

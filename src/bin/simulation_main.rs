@@ -1,7 +1,7 @@
 // simulation_main.rs
-use rts_assignment::simulation_engine::intersections::create_intersections;
-use rts_assignment::simulation_engine::lanes::create_lanes;
-use rts_assignment::simulation_engine::simulation::run_simulation;
+use rts_assignment::c1_tp063879::intersections::create_intersections;
+use rts_assignment::c1_tp063879::lanes::create_lanes;
+use rts_assignment::c1_tp063879::simulation::run_simulation;
 use std::sync::{Arc, Mutex};
 
 #[tokio::main]

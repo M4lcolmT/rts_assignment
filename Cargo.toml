@@ -21,11 +21,23 @@ name = "bench_spawn_vehicle"
 harness = false
 
 [[bench]]
-name = "bench_update"
+name = "bench_simulate_vehicle_journey"
 harness = false
 
 [[bench]]
-name = "bench_simulate_vehicle_journey"
+name = "bench_traffic_analyzer"
+harness = false
+
+[[bench]]
+name = "bench_is_lane_green"
+harness = false
+
+[[bench]]
+name = "bench_traffic_light_controller"
+harness = false
+
+[[bench]]
+name = "bench_monitoring_system"
 harness = false
 
 [[bin]]

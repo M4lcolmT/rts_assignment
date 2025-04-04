@@ -2,34 +2,11 @@ use criterion::{
     black_box, criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion,
     PlotConfiguration,
 };
-use rts_assignment::simulation_engine::intersections::create_intersections;
-use rts_assignment::simulation_engine::lanes::create_lanes;
-use rts_assignment::simulation_engine::simulation::{collect_traffic_data, spawn_vehicle};
+use rts_assignment::c1_tp063879::intersections::create_intersections;
+use rts_assignment::c1_tp063879::lanes::create_lanes;
+use rts_assignment::c1_tp063879::simulation::{collect_traffic_data, spawn_vehicle};
 use std::sync::{Arc, Mutex};
 use std::vec;
-
-// fn bench_spawn_vehicle(c: &mut Criterion) {
-//     let intersections = Arc::new(Mutex::new(create_intersections()));
-//     let lanes = Arc::new(Mutex::new(create_lanes()));
-
-//     let lanes_guard = lanes.lock().unwrap();
-//     let intersections_guard = intersections.lock().unwrap();
-//     let traffic_data = collect_traffic_data(&lanes_guard, &intersections_guard, vec![]);
-//     drop(lanes_guard);
-//     drop(intersections_guard);
-
-//     let mut next_vehicle_id = 1;
-
-//     c.bench_function("spawn_vehicle", |b| {
-//         b.iter(|| {
-//             let result = spawn_vehicle(&intersections, &lanes, &traffic_data, &mut next_vehicle_id);
-//             criterion::black_box(result);
-//         });
-//     });
-// }
-
-// criterion_group!(benches, bench_spawn_vehicle);
-// criterion_main!(benches);
 
 fn bench_spawn_vehicle_batches(c: &mut Criterion) {
     let intersections = Arc::new(Mutex::new(create_intersections()));

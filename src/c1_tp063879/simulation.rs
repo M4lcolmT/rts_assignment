@@ -1,12 +1,12 @@
 // simulation.rs
-use crate::control_system::traffic_light_controller::TrafficLightController;
+use crate::c1_tp063879::intersections::{Intersection, IntersectionControl};
+use crate::c1_tp063879::lanes::Lane;
+use crate::c1_tp063879::route_generation::generate_shortest_lane_route;
+use crate::c1_tp063879::vehicles::{Vehicle, VehicleType};
+use crate::c3_tp063987::traffic_light_controller::TrafficLightController;
 use crate::global_variables::{AMQP_URL, QUEUE_TRAFFIC_DATA};
 use crate::shared_data::current_timestamp;
 use crate::shared_data::{TrafficData, TrafficUpdate, VehicleData};
-use crate::simulation_engine::intersections::{Intersection, IntersectionControl};
-use crate::simulation_engine::lanes::Lane;
-use crate::simulation_engine::route_generation::generate_shortest_lane_route;
-use crate::simulation_engine::vehicles::{Vehicle, VehicleType};
 
 use amiquip::{Connection, Exchange, Publish, QueueDeclareOptions};
 use rand::rngs::SmallRng;

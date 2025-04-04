@@ -1,7 +1,7 @@
+use crate::c1_tp063879::intersections::{Intersection, IntersectionControl, IntersectionId};
+use crate::c1_tp063879::lanes::Lane;
 use crate::global_variables::{AMQP_URL, QUEUE_CONGESTION_ALERTS, QUEUE_LIGHT_ADJUSTMENTS};
 use crate::shared_data::{current_timestamp, CongestionAlert, LightAdjustment};
-use crate::simulation_engine::intersections::{Intersection, IntersectionControl, IntersectionId};
-use crate::simulation_engine::lanes::Lane;
 use amiquip::{
     Connection, ConsumerMessage, ConsumerOptions, Exchange, Publish, QueueDeclareOptions,
     Result as AmiquipResult,
